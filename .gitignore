@@ -66,3 +66,6 @@ target/
 
 # Test/cache
 .pytest_cache/
+
+# Models (large files)
+models/
