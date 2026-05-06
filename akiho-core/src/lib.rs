@@ -14,6 +14,9 @@ pub use error::{AkihoError, Result};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemState {
     pub energy: f32,
@@ -535,4 +538,20 @@ pub mod python {
             })
         }
     }
+}
+
+// ═══ Python 模块入口 ═══
+#[cfg(feature = "python")]
+#[pymodule]
+fn akiho_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<python::PyEmotionEngine>()?;
+    m.add_class::<python::PyBodySystem>()?;
+    m.add_class::<python::PyGrowthEngine>()?;
+    m.add_class::<python::PyCognitionEngine>()?;
+    m.add_class::<python::PyRelationshipManager>()?;
+    m.add_class::<python::PyAutonomousEngine>()?;
+    m.add_class::<python::PyMemoryStore>()?;
+    m.add_class::<python::PyBehaviorEngine>()?;
+    m.add_class::<python::PyAkihoCore>()?;
+    Ok(())
 }
