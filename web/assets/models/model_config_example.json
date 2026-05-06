@@ -1,0 +1,53 @@
+{
+  "模型配置示例": "将此文件放在 models/你的模型名/ 目录下",
+  "说明": "Live2D Cubism 5 模型配置文件示例",
+  "FileReferences": {
+    "Moc": "你的模型名.moc3",
+    "Textures": [
+      "textures/Texture_00.png",
+      "textures/Texture_01.png"
+    ],
+    "Motions": {
+      "idle": [
+        {
+          "File": "motions/idle.motion3.json",
+          "Name": "idle"
+        }
+      ],
+      "talk": [
+        {
+          "File": "motions/talk.motion3.json",
+          "Name": "talk"
+        }
+      ]
+    },
+    "Expressions": [
+      {
+        "File": "expressions/happy.expression3.json",
+        "Name": "happy"
+      },
+      {
+        "File": "expressions/neutral.expression3.json",
+        "Name": "neutral"
+      }
+    ]
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": ["ParamEyeLOpen", "ParamEyeROpen"]
+    },
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": ["ParamMouthOpenY"]
+    }
+  ],
+  "Usage": {
+    "步骤1": "在 web/assets/models/ 下创建你的模型目录",
+    "步骤2": "将 .moc3 文件和纹理图片放入目录",
+    "步骤3": "创建 model3.json 配置文件",
+    "步骤4": "在 app.js 中修改 CONFIG.LIVE2D.defaultModel 为你的模型路径"
+  }
+}

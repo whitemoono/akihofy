@@ -1,0 +1,48 @@
+[package]
+name = "akiho-core"
+version = "0.1.0"
+edition = "2021"
+description = "AKIHO AI Companion Core Engine"
+authors = ["AKIHO Team"]
+license = "MIT"
+
+[lib]
+name = "akiho_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 错误处理
+thiserror = "1.0"
+anyhow = "1.0"
+
+# 时间
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# 随机数
+rand = "0.8"
+
+# 日志（精简）
+tracing = "0.1"
+
+# Python 绑定
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[features]
+default = ["python"]
+python = ["pyo3"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,624 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply bg-cream text-gray-800 font-sans;
+  }
+
+  ::selection {
+    @apply bg-primary-200 text-primary-900;
+  }
+
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(45, 164, 168, 0.15); border-radius: 10px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(45, 164, 168, 0.3); }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-6 py-3 bg-gradient-to-r from-primary-400 to-primary-500
+           text-white font-medium rounded-full
+           shadow-lg shadow-primary-300/50
+           hover:shadow-xl hover:shadow-primary-400/60
+           hover:from-primary-500 hover:to-primary-600
+           active:scale-95
+           transition-all duration-300;
+  }
+
+  .btn-secondary {
+    @apply px-5 py-2.5 bg-white/80 backdrop-blur-sm
+           text-primary-600 font-medium rounded-full
+           border-2 border-primary-200
+           hover:bg-primary-50 hover:border-primary-300
+           active:scale-95
+           transition-all duration-300;
+  }
+
+  .card {
+    @apply bg-white/70 backdrop-blur-md
+           rounded-3xl
+           border border-white/50
+           shadow-card;
+  }
+
+  .card-hover {
+    @apply hover:shadow-soft hover:-translate-y-1
+           transition-all duration-300;
+  }
+
+  .input-field {
+    @apply w-full px-5 py-3.5
+           bg-white/80 backdrop-blur-sm
+           rounded-2xl
+           border-2 border-transparent
+           text-gray-700 placeholder-gray-400
+           focus:outline-none focus:border-primary-300 focus:bg-white
+           transition-all duration-300;
+  }
+
+  .message-bubble {
+    @apply relative px-5 py-3 rounded-3xl
+           max-w-[80%] md:max-w-[70%];
+  }
+
+  .message-bubble-ai {
+    @apply bg-gradient-to-br from-primary-100 to-sakura/30
+           text-gray-700 rounded-tl-2xl rounded-tr-sm rounded-br-2xl rounded-bl-sm;
+  }
+
+  .message-bubble-user {
+    @apply bg-gradient-to-br from-sky to-blue-300
+           text-white rounded-tl-sm rounded-tr-2xl rounded-br-sm rounded-bl-2xl
+           ml-auto;
+  }
+
+  .status-badge {
+    @apply inline-flex items-center gap-1.5 px-3 py-1.5
+           bg-white/80 backdrop-blur-sm
+           rounded-full text-sm font-medium
+           border border-primary-100;
+  }
+
+  .glass {
+    @apply bg-white/60 backdrop-blur-lg
+           border border-white/50;
+  }
+
+  .gradient-text {
+    @apply bg-gradient-to-r from-primary-500 via-pink-500 to-primary-600
+           bg-clip-text text-transparent;
+  }
+}
+
+@layer utilities {
+  .text-shadow {
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+
+  .glow {
+    @apply shadow-[0_0_30px_rgba(255,107,157,0.4)];
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-out forwards;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.5s ease-out forwards;
+  }
+
+  .animate-scale-in {
+    animation: scaleIn 0.3s ease-out forwards;
+  }
+}
+
+/* 玻璃拟态效果 */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.45);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 12px 40px 0 rgba(31, 38, 135, 0.05);
+}
+
+.glass-input {
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.02);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-input:focus {
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 0 2px rgba(45, 164, 168, 0.2), inset 0 1px 2px rgba(0,0,0,0.01);
+  outline: none;
+}
+
+/* 动态背景光效 */
+.ambient-glow {
+  position: absolute;
+  width: 70vw;
+  height: 70vw;
+  background: radial-gradient(circle, rgba(167, 216, 222, 0.3) 0%, rgba(255, 255, 255, 0) 60%);
+  border-radius: 50%;
+  filter: blur(60px);
+  z-index: -1;
+  animation: ambientFloat 10s infinite ease-in-out alternate;
+}
+
+@keyframes ambientFloat {
+  0% { transform: translate(0, 0) scale(1); }
+  100% { transform: translate(3vw, 2vh) scale(1.05); }
+}
+
+/* Live2D 渲染区占位背景 */
+.live2d-placeholder {
+  background: linear-gradient(to top, rgba(167, 216, 222, 0.1) 0%, transparent 100%);
+  backdrop-filter: blur(2px);
+}
+
+/* 同步状态指示灯 */
+.sync-indicator {
+  box-shadow: 0 0 8px rgba(45, 164, 168, 0.8);
+}
+
+/* 消息气泡阴影 */
+.msg-bubble-ai {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.02);
+}
+
+.msg-bubble-user {
+  box-shadow: 0 4px 15px rgba(45, 164, 168, 0.2);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 漂浮粒子效果 */
+.floating-particles {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+}
+
+.floating-particle {
+  position: absolute;
+  border-radius: 50%;
+  animation: floatParticle linear infinite;
+  opacity: 0.6;
+}
+
+@keyframes floatParticle {
+  0% {
+    transform: translateY(100vh) rotate(0deg);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.6;
+  }
+  90% {
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(-100px) rotate(360deg);
+    opacity: 0;
+  }
+}
+
+/* 云朵装饰 */
+.cloud {
+  position: absolute;
+  background: white;
+  border-radius: 100px;
+  opacity: 0.4;
+  filter: blur(1px);
+}
+
+.cloud::before,
+.cloud::after {
+  content: '';
+  position: absolute;
+  background: white;
+  border-radius: 50%;
+}
+
+.cloud-1 {
+  width: 120px;
+  height: 40px;
+  top: 15%;
+  animation: float 20s ease-in-out infinite;
+}
+
+.cloud-1::before {
+  width: 50px;
+  height: 50px;
+  top: -25px;
+  left: 20px;
+}
+
+.cloud-1::after {
+  width: 70px;
+  height: 70px;
+  top: -35px;
+  right: 20px;
+}
+
+.cloud-2 {
+  width: 100px;
+  height: 30px;
+  top: 25%;
+  right: 10%;
+  animation: float 25s ease-in-out infinite reverse;
+}
+
+.cloud-2::before {
+  width: 40px;
+  height: 40px;
+  top: -20px;
+  left: 15px;
+}
+
+.cloud-2::after {
+  width: 50px;
+  height: 50px;
+  top: -25px;
+  right: 15px;
+}
+
+/* 打字机光标 */
+.typing-cursor::after {
+  content: '|';
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* 音频可视化条 */
+.audio-bar {
+  width: 4px;
+  height: 20px;
+  background: linear-gradient(to top, primary-400, primary-600);
+  border-radius: 2px;
+  animation: audioWave 0.5s ease-in-out infinite alternate;
+}
+
+.audio-bar:nth-child(1) { animation-delay: 0s; }
+.audio-bar:nth-child(2) { animation-delay: 0.1s; }
+.audio-bar:nth-child(3) { animation-delay: 0.2s; }
+.audio-bar:nth-child(4) { animation-delay: 0.3s; }
+.audio-bar:nth-child(5) { animation-delay: 0.4s; }
+
+@keyframes audioWave {
+  from { height: 8px; }
+  to { height: 24px; }
+}
+
+/* ==================== 表格样式 ==================== */
+
+/* 表格容器 */
+.table-container {
+  @apply bg-white/60 backdrop-blur-xl rounded-2xl border border-white/50 shadow-lg overflow-hidden;
+}
+
+/* 表格工具栏 */
+.table-toolbar {
+  @apply p-4 border-b border-white/50 bg-white/30;
+}
+
+/* 表格主体 */
+.table-wrapper {
+  @apply overflow-x-auto;
+}
+
+/* 表格 */
+.data-table {
+  @apply w-full;
+}
+
+/* 表头 */
+.table-header {
+  @apply bg-slate-50/50;
+}
+
+.table-header-cell {
+  @apply px-4 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider;
+}
+
+.table-header-cell.sortable {
+  @apply cursor-pointer select-none hover:bg-slate-100 transition;
+}
+
+/* 表格行 */
+.table-row {
+  @apply transition-colors;
+}
+
+.table-row.even {
+  @apply bg-white/40;
+}
+
+.table-row.odd {
+  @apply bg-slate-50/30;
+}
+
+.table-row:hover {
+  @apply bg-violet-50/30;
+}
+
+.table-row.selected {
+  @apply bg-violet-50/50;
+}
+
+/* 表格单元格 */
+.table-cell {
+  @apply px-4 py-3 text-sm text-slate-700;
+}
+
+/* 表格分页器 */
+.table-pagination {
+  @apply px-4 py-3 border-t border-white/50 bg-white/30 flex items-center justify-between;
+}
+
+/* 表格筛选器 */
+.table-filter {
+  @apply px-3 py-2 text-sm bg-white/80 border border-slate-200 rounded-lg
+         focus:outline-none focus:ring-2 focus:ring-violet-200 cursor-pointer;
+}
+
+/* 表格搜索框 */
+.table-search {
+  @apply relative flex-1 min-w-[200px];
+}
+
+.table-search input {
+  @apply w-full pl-9 pr-3 py-2 text-sm bg-white/80 border border-slate-200 rounded-lg
+         focus:outline-none focus:ring-2 focus:ring-violet-200 focus:border-violet-300
+         placeholder-slate-400 transition;
+}
+
+/* 斑马纹 */
+.table-striped tbody tr:nth-child(odd) {
+  @apply bg-slate-50/30;
+}
+
+/* 表格边框 */
+.table-bordered {
+  @apply border-collapse;
+}
+
+.table-bordered th,
+.table-bordered td {
+  @apply border border-slate-200/50;
+}
+
+/* 紧凑型表格 */
+.table-condensed th,
+.table-condensed td {
+  @apply px-2 py-1.5 text-xs;
+}
+
+/* 表格悬停效果 */
+.table-hover tbody tr:hover {
+  @apply bg-violet-50/50;
+}
+
+/* 表格选中效果 */
+.table-selectable tbody tr {
+  @apply cursor-pointer;
+}
+
+/* 表格操作列 */
+.table-actions {
+  @apply flex items-center justify-center gap-1;
+}
+
+.table-action-btn {
+  @apply p-1.5 rounded-lg hover:bg-slate-100 transition;
+}
+
+/* 表格徽章 */
+.table-badge {
+  @apply inline-flex items-center rounded-full font-medium text-xs px-2 py-0.5;
+}
+
+.table-badge-blue {
+  @apply bg-blue-100 text-blue-700;
+}
+
+.table-badge-green {
+  @apply bg-emerald-100 text-emerald-700;
+}
+
+.table-badge-amber {
+  @apply bg-amber-100 text-amber-700;
+}
+
+.table-badge-rose {
+  @apply bg-rose-100 text-rose-700;
+}
+
+.table-badge-violet {
+  @apply bg-violet-100 text-violet-700;
+}
+
+.table-badge-cyan {
+  @apply bg-cyan-100 text-cyan-700;
+}
+
+/* 表格进度条 */
+.table-progress {
+  @apply flex items-center gap-2;
+}
+
+.table-progress-bar {
+  @apply flex-1 h-2 bg-slate-100 rounded-full overflow-hidden;
+}
+
+.table-progress-fill {
+  @apply h-full rounded-full transition-all;
+}
+
+.table-progress-label {
+  @apply text-xs text-slate-500 w-10 text-right;
+}
+
+/* 表格空状态 */
+.table-empty {
+  @apply flex flex-col items-center justify-center py-12 px-4 text-center;
+}
+
+.table-empty-icon {
+  @apply w-20 h-20 rounded-full bg-slate-100 flex items-center justify-center mb-4;
+}
+
+.table-empty-text {
+  @apply text-lg font-medium text-slate-700 mb-2;
+}
+
+.table-empty-desc {
+  @apply text-sm text-slate-500 max-w-sm mb-4;
+}
+
+/* 表格加载骨架屏 */
+.table-skeleton-row {
+  @apply border-b border-slate-100;
+}
+
+.table-skeleton-cell {
+  @apply px-4 py-3;
+}
+
+.table-skeleton {
+  @apply h-4 bg-slate-200 rounded animate-pulse;
+}
+
+/* 表格排序图标 */
+.sort-icon {
+  @apply text-slate-300;
+}
+
+.sort-icon.active-asc {
+  @apply text-violet-500;
+}
+
+.sort-icon.active-desc {
+  @apply text-violet-500;
+}
+
+/* 表格展开行 */
+.table-expanded-row {
+  @apply bg-slate-50/30;
+}
+
+.table-expanded-content {
+  @apply px-4 py-4;
+}
+
+/* 表格复选框 */
+.table-checkbox {
+  @apply p-1 hover:bg-slate-200 rounded transition cursor-pointer;
+}
+
+.table-checkbox-checked {
+  @apply text-violet-500;
+}
+
+.table-checkbox-unchecked {
+  @apply text-slate-300;
+}
+
+/* 表格批量操作栏 */
+.table-bulk-actions {
+  @apply flex items-center gap-3 p-3 bg-violet-50 rounded-lg border border-violet-200;
+}
+
+.table-bulk-count {
+  @apply text-sm text-violet-700;
+}
+
+/* 表格工具提示 */
+.table-tooltip {
+  @apply absolute z-50 px-2 py-1 text-xs text-white bg-slate-800 rounded shadow-lg;
+}
+
+/* 表格拖拽手柄 */
+.table-drag-handle {
+  @apply p-1 cursor-grab text-slate-400 hover:text-slate-600;
+}
+
+.table-drag-handle:active {
+  @apply cursor-grabbing;
+}
+
+/* 表格固定列 */
+.table-fixed-left {
+  @apply sticky left-0 bg-white z-10 shadow-[2px_0_4px_rgba(0,0,0,0.05)];
+}
+
+.table-fixed-right {
+  @apply sticky right-0 bg-white z-10 shadow-[-2px_0_4px_rgba(0,0,0,0.05)];
+}
+
+/* 表格滚动条 */
+.table-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.table-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.table-scroll::-webkit-scrollbar-thumb {
+  background: rgba(139, 92, 246, 0.2);
+  border-radius: 3px;
+}
+
+.table-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(139, 92, 246, 0.4);
+}
+
+/* 表格单元格内容截断 */
+.table-cell-truncate {
+  @apply max-w-xs truncate overflow-hidden text-ellipsis whitespace-nowrap;
+}
+
+/* 表格图标徽章 */
+.table-icon-badge {
+  @apply inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium;
+}

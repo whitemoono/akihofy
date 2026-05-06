@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>秋穗 Akiho - 纯净流体矩阵</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #f4f9fa 0%, #e0f2f5 50%, #eff5f7 100%);
+            font-family: 'Inter', -apple-system, sans-serif;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+        }
+
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(45, 164, 168, 0.2); border-radius: 10px; }
+
+        canvas {
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 0;
+            pointer-events: auto; 
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+            image-rendering: pixelated;
+        }
+
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.45);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            box-shadow: 0 12px 40px rgba(45, 164, 168, 0.08);
+        }
+
+        .glass-input {
+            background: rgba(255, 255, 255, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            transition: all 0.3s ease;
+        }
+        .glass-input:focus {
+            background: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 0 0 2px rgba(45, 164, 168, 0.2), inset 0 1px 2px rgba(0,0,0,0.01);
+            outline: none;
+        }
+
+        .msg-fade-in {
+            animation: fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex relative text-slate-700">
+
+    <canvas id="particleCanvas"></canvas>
+
+    <main class="w-full h-full max-w-[1400px] mx-auto flex items-center justify-end p-12 z-10 pointer-events-none relative">
+        <section class="glass-panel w-full max-w-[420px] h-[82vh] rounded-[2.5rem] flex flex-col pointer-events-auto overflow-hidden">
+            
+            <header class="p-6 pb-4 flex justify-between items-start bg-white/40 border-b border-white/50">
+                <div class="flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-2xl bg-white flex items-center justify-center text-teal-500 shadow-sm border border-teal-50 relative overflow-hidden">
+                        <svg class="w-6 h-6 relative z-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg>
+                    </div>
+                    <div>
+                        <h1 class="text-xl font-semibold text-slate-800 tracking-wide">秋穗 Akiho</h1>
+                        <p class="text-[11px] text-teal-600/70 font-medium tracking-widest mt-1">纯净全息矩阵终端</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 mt-2" id="status-indicator">
+                    <span class="text-[10px] text-teal-500 font-mono transition-colors duration-300" id="status-text">IDLE</span>
+                    <div class="w-1.5 h-1.5 rounded-full bg-teal-400 mt-0.5 shadow-[0_0_8px_rgba(45,164,168,0.6)]" id="status-dot"></div>
+                </div>
+            </header>
+
+            <div class="flex-1 px-6 py-6 flex flex-col gap-5 overflow-y-auto" id="chat-stream">
+                <div class="flex gap-3 max-w-[90%] msg-fade-in">
+                    <div class="bg-white/80 p-4 rounded-3xl rounded-tl-sm border border-white text-[14px] leading-relaxed shadow-[0_2px_10px_rgba(0,0,0,0.02)] text-slate-600">
+                        <span class="text-xs font-mono text-teal-500 mb-1 block">[System] 律动场已净化</span>
+                        已移除所有高光闪烁与流光特效。<br>当前秋穗正处于纯净的丝绸律动模式，提供极致平滑的视觉交互体验。
+                    </div>
+                </div>
+            </div>
+
+            <footer class="p-6 pt-2 bg-gradient-to-t from-white/30 to-transparent">
+                <div class="relative flex items-center group">
+                    <input type="text" id="chat-input" placeholder="输入指令与秋穗对话..." class="glass-input w-full rounded-2xl py-4 pl-6 pr-14 text-sm placeholder-slate-400 text-slate-700">
+                    <button id="send-btn" class="absolute right-2 p-2.5 rounded-xl text-teal-500 hover:bg-teal-50 transition-all">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+                    </button>
+                </div>
+            </footer>
+        </section>
+    </main>
+
+    <script>
+        const canvas = document.getElementById('particleCanvas');
+        const ctx = canvas.getContext('2d');
+        let width, height;
+        let particles = [];
+        let mouse = { x: -1000, y: -1000, radius: 80 }; 
+        let time = 0; 
+        let aiState = 'idle'; 
+
+        const CONFIG = {
+            imageUrl: "https://wsrv.nl/?url=" + encodeURIComponent("https://cdn-fusion.imgcdn.store/i/2026/ba90b7135e504314.png"), 
+            step: 3,           
+            particleSize: 3.2, 
+            repelForce: 80     
+        };
+
+        function resize() {
+            const dpr = window.devicePixelRatio || 1;
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+            ctx.scale(dpr, dpr);
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        window.addEventListener('mousemove', e => { mouse.x = e.x; mouse.y = e.y; });
+        window.addEventListener('mouseout', () => { mouse.x = -1000; mouse.y = -1000; });
+
+        function initImageParticles() {
+            const img = new Image();
+            img.crossOrigin = "Anonymous"; 
+            img.src = CONFIG.imageUrl;
+
+            img.onload = () => {
+                const offCanvas = document.createElement('canvas');
+                const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+                const scale = (height * 0.85) / img.height;
+                const drawW = img.width * scale;
+                const drawH = img.height * scale;
+                const offsetX = width * 0.15; 
+                const offsetY = (height - drawH) / 2;
+
+                offCanvas.width = width;
+                offCanvas.height = height;
+                offCtx.drawImage(img, offsetX, offsetY, drawW, drawH);
+
+                const data = offCtx.getImageData(0, 0, width, height).data;
+                particles = [];
+
+                for (let y = 0; y < height; y += CONFIG.step) {
+                    for (let x = 0; x < width; x += CONFIG.step) {
+                        const index = (y * width + x) * 4;
+                        const alpha = data[index + 3];
+                        
+                        if (alpha > 80) {
+                            particles.push({
+                                x: Math.random() * width,  
+                                y: Math.random() * height,
+                                baseX: x,                  
+                                baseY: y,
+                                color: `rgba(${data[index]}, ${data[index+1]}, ${data[index+2]}, ${Math.min(1, alpha/200)})`, 
+                                size: CONFIG.particleSize,
+                                density: (Math.random() * 30) + 1 
+                            });
+                        }
+                    }
+                }
+                animate();
+            };
+        }
+
+        function updateUIState() {
+            const statusText = document.getElementById('status-text');
+            const dot = document.getElementById('status-dot');
+            
+            if (aiState === 'idle') {
+                statusText.innerText = 'ONLINE';
+                statusText.className = 'text-[10px] text-teal-500 font-mono';
+                dot.className = 'w-1.5 h-1.5 rounded-full bg-teal-400 mt-0.5 shadow-[0_0_8px_rgba(45,164,168,0.6)]';
+            } else if (aiState === 'thinking') {
+                statusText.innerText = 'COMPUTING...';
+                statusText.className = 'text-[10px] text-indigo-500 font-mono';
+                dot.className = 'w-1.5 h-1.5 rounded-full bg-indigo-500 mt-0.5 animate-ping';
+            } else if (aiState === 'speaking') {
+                statusText.innerText = 'STREAMING...';
+                statusText.className = 'text-[10px] text-sky-500 font-mono';
+                dot.className = 'w-1.5 h-1.5 rounded-full bg-sky-400 mt-0.5 shadow-[0_0_10px_rgba(56,189,248,0.8)]';
+            }
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, width, height);
+            time += (aiState === 'thinking') ? 0.08 : 0.02; 
+
+            for (let i = 0; i < particles.length; i++) {
+                let p = particles[i];
+
+                let dx = mouse.x - p.x;
+                let dy = mouse.y - p.y;
+                let distance = Math.sqrt(dx * dx + dy * dy);
+                let isMouseAffected = false;
+                
+                if (distance < mouse.radius) {
+                    let force = (mouse.radius - distance) / mouse.radius;
+                    p.x -= (dx / distance) * force * p.density * (CONFIG.repelForce / 10);
+                    p.y -= (dy / distance) * force * p.density * (CONFIG.repelForce / 10);
+                    isMouseAffected = true;
+                }
+
+                let targetX = p.baseX;
+                let targetY = p.baseY;
+
+                if (aiState === 'thinking') {
+                    targetX += (Math.random() - 0.5) * 3;
+                    targetY += (Math.random() - 0.5) * 3;
+                } 
+                else if (aiState === 'speaking') {
+                    let pulse = Math.sin(time * 3 + p.baseY * 0.02) * 2;
+                    targetY -= pulse;
+                } 
+                else {
+                    // 【纯净丝绸律动算法】
+                    // 仅保留平滑的波浪偏移，移除一切色彩亮度扰动
+                    let waveX = Math.sin(time + p.baseY * 0.008) * 1.5;
+                    let waveY = Math.cos(time + p.baseX * 0.008) * 1.5;
+                    let breath = Math.sin(time * 1.2) * 2; 
+
+                    targetX = p.baseX + waveX;
+                    targetY = p.baseY + waveY + breath;
+                }
+
+                if (!isMouseAffected) {
+                    p.x += (targetX - p.x) * 0.08;
+                    p.y += (targetY - p.y) * 0.08;
+                }
+
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size);
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        const chatInput = document.getElementById('chat-input');
+        const sendBtn = document.getElementById('send-btn');
+        const chatStream = document.getElementById('chat-stream');
+
+        function appendUserMessage(text) {
+            const html = `<div class="flex gap-3 max-w-[90%] self-end flex-row-reverse msg-fade-in"><div class="bg-teal-500 text-white p-3.5 px-5 rounded-3xl rounded-tr-sm text-[14px] font-light shadow-md">${text}</div></div>`;
+            chatStream.insertAdjacentHTML('beforeend', html);
+            scrollToBottom();
+        }
+
+        function appendAIMessage(text) {
+            const id = 'msg-' + Date.now();
+            const html = `<div class="flex gap-3 max-w-[90%] msg-fade-in"><div id="${id}" class="bg-white/80 p-4 rounded-3xl rounded-tl-sm border border-white text-[14px] text-slate-600 shadow-[0_2px_10px_rgba(0,0,0,0.02)]"></div></div>`;
+            chatStream.insertAdjacentHTML('beforeend', html);
+            scrollToBottom();
+
+            const msgDiv = document.getElementById(id);
+            let i = 0;
+            aiState = 'speaking'; 
+            updateUIState();
+
+            const timer = setInterval(() => {
+                if (i < text.length) {
+                    msgDiv.innerHTML += text.charAt(i);
+                    i++;
+                    scrollToBottom();
+                } else {
+                    clearInterval(timer);
+                    aiState = 'idle'; 
+                    updateUIState();
+                }
+            }, 50);
+        }
+
+        function scrollToBottom() { chatStream.scrollTop = chatStream.scrollHeight; }
+
+        function handleSend() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+            appendUserMessage(text);
+            chatInput.value = '';
+            aiState = 'thinking';
+            updateUIState();
+            setTimeout(() => {
+                appendAIMessage("流光效果已经移除。现在这样感觉更纯粹、更耐看了吗？");
+            }, 1200);
+        }
+
+        sendBtn.addEventListener('click', handleSend);
+        chatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleSend(); });
+
+        setTimeout(initImageParticles, 100);
+    </script>
+</body>
+</html>

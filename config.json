@@ -1,0 +1,63 @@
+{
+  "llm": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "sk-b203bc3d22184a65866ce80e748963dc",
+    "temperature": 0.7,
+    "max_tokens": 4096,
+    "available_models": [
+      "deepseek-v4-flash",
+      "deepseek-v4-pro"
+    ],
+    "presets": [
+      {
+        "id": "default-1",
+        "name": "DeepSeek 智能助手",
+        "provider": "deepseek",
+        "base_url": "https://api.deepseek.com/v1",
+        "model_id": "deepseek-v4-flash",
+        "api_key": "sk-b203bc3d22184a65866ce80e748963dc",
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "top_p": 0.9,
+        "frequency_penalty": 0,
+        "presence_penalty": 0,
+        "stop": [],
+        "available_models": [
+          "deepseek-v4-flash",
+          "deepseek-v4-pro"
+        ]
+      }
+    ],
+    "active_preset_id": "default-1"
+  },
+  "embedding": {
+    "provider": "dashscope",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "sk-dadcc682caf54f02ab228f8986325d4d",
+    "dimension": 1024,
+    "presets": [
+      {
+        "id": "default-1",
+        "name": "默认配置",
+        "provider": "dashscope",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model_id": "tongyi-embedding-vision-plus-2026-03-06",
+        "api_key": "sk-dadcc682caf54f02ab228f8986325d4d",
+        "dimension": 1024
+      }
+    ],
+    "active_preset_id": "default-1"
+  },
+  "tts": {
+    "voice": "zh-CN-XiaobaiNeural",
+    "speed": 1.0,
+    "pitch": 1.0,
+    "enabled": true
+  },
+  "system": {
+    "host": "localhost",
+    "port": 8000,
+    "debug": false
+  }
+}
