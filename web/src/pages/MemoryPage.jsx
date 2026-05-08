@@ -190,11 +190,11 @@ export function MemoryPage() {
                 <div className="text-[10px] text-slate-500">总记忆</div>
               </div>
               <div className="text-center">
-                <div className="text-lg font-bold text-emerald-600">{stats.avgStrength.toFixed(2)}</div>
+                <div className="text-lg font-bold text-emerald-600">{stats.avgStrength?.toFixed(2) ?? '0.00'}</div>
                 <div className="text-[10px] text-slate-500">平均强度</div>
               </div>
               <div className="text-center">
-                <div className="text-lg font-bold text-amber-600">{stats.memoryUsage * 100}%</div>
+                <div className="text-lg font-bold text-amber-600">{(stats.memoryUsage ?? 0) * 100}%</div>
                 <div className="text-[10px] text-slate-500">内存占用</div>
               </div>
             </div>

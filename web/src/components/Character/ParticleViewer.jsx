@@ -9,7 +9,6 @@ export function ParticleViewer({ mood, isSpeaking, settings }) {
   const animationRef = useRef(null)
   const mouseRef = useRef({ x: -1000, y: -1000, radius: 80 })
   const timeRef = useRef(0)
-  const isInitializedRef = useRef(false)
 
   const [loading, setLoading] = useState(false)
   const [loadingStep, setLoadingStep] = useState('')
@@ -243,13 +242,14 @@ export function ParticleViewer({ mood, isSpeaking, settings }) {
 
   // 初始化
   useEffect(() => {
-    // 防止重复初始化
-    if (isInitializedRef.current) return
-    isInitializedRef.current = true
-
     initCanvas()
-    // 初始化时生成默认粒子
-    generateDefaultParticles()
+
+    // 初始化时根据是否有图片生成粒子
+    if (imageUrl) {
+      loadImage(imageUrl)
+    } else {
+      generateDefaultParticles()
+    }
 
     // 开始动画
     animationRef.current = requestAnimationFrame(animate)
@@ -258,6 +258,8 @@ export function ParticleViewer({ mood, isSpeaking, settings }) {
       initCanvas()
       if (imageUrl) {
         loadImage(imageUrl)
+      } else {
+        generateDefaultParticles()
       }
     }
 
@@ -280,19 +282,23 @@ export function ParticleViewer({ mood, isSpeaking, settings }) {
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current)
       }
-      isInitializedRef.current = false
     }
-  }, [animate])
+  }, [])
 
   // 当图片 URL 或粒子参数变化时重新加载
   useEffect(() => {
-    if (!isInitializedRef.current) return
     if (imageUrl) {
       loadImage(imageUrl)
-    } else {
-      generateDefaultParticles()
     }
-  }, [imageUrl, particleConfig])
+  }, [imageUrl])
+
+  // 当粒子参数变化时更新粒子大小
+  useEffect(() => {
+    if (!particlesRef.current.length) return
+    particlesRef.current.forEach(p => {
+      p.size = particleConfig.particleSize
+    })
+  }, [particleConfig.particleSize])
 
   return (
     <div className="relative w-full h-full min-h-[500px]">

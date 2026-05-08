@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "allow"
 
     def get_embedding_config(self) -> dict:
         """从 config.json 获取 embedding 配置"""

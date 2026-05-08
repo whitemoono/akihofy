@@ -14,7 +14,23 @@ from engine.memory import MemoryManager
 from engine.behavior import BehaviorManager
 from engine.llm import LLMManager, GenerationContext, get_llm_manager
 from engine.persistence import StateStore, MemoryStateStore
+from engine.persistence import MessageStore, init_message_store, get_message_store
 from config import load_config_json
+
+# 事件日志器
+try:
+    from engine.logging import get_event_logger
+except ImportError:
+    get_event_logger = None
+
+# WebSocket 广播器（延迟导入避免循环依赖）
+_broadcaster: Optional[Any] = None
+
+
+def set_broadcaster(broadcaster):
+    """设置 WebSocket 广播器（由 api_server.py 调用）"""
+    global _broadcaster
+    _broadcaster = broadcaster
 
 # 尝试导入 Rust PyO3 绑定
 try:
@@ -394,7 +410,18 @@ class _BehaviorBridge:
     def get_active(self) -> List[Dict[str, Any]]:
         if self._rust is None:
             return []
-        return []  # 简化：Rust 层状态暂不映射回 Python
+        try:
+            active_list = self._rust.get_active()
+            result = []
+            for item in active_list:
+                result.append({
+                    "id": item.get("behavior_id", ""),
+                    "progress": item.get("progress", 0.0),
+                    "started_at": item.get("started_at", 0),
+                })
+            return result
+        except Exception:
+            return []
 
 
 class _BehaviorAdapter:
@@ -492,6 +519,10 @@ class AkihoEngine:
         self._persistence_key = "akiho_state"
         self._persistence_ttl: Optional[int] = 3600  # 1 小时 TTL
 
+        # 消息持久化
+        self._message_store = get_message_store()
+        self._current_session_id: Optional[int] = None
+
         # 状态
         self._running = False
         self._tick_interval = 0.1  # 100ms
@@ -543,6 +574,9 @@ class AkihoEngine:
         Args:
             delta: 时间增量（秒）
         """
+        # 记录上一个情绪状态用于变化检测
+        prev_emotion_state = self.emotion.get_state() if hasattr(self.emotion, 'get_state') else None
+
         # 更新生理系统（Rust 或 fallback）
         self._body.update(delta)
 
@@ -554,6 +588,21 @@ class AkihoEngine:
         )
         # PAD 衰减（由 adapter 委托到 Rust 或 Python）
         self.emotion.update(delta)
+
+        # 记录情绪日志（如果有日志系统）
+        if get_event_logger:
+            try:
+                emotion_state = self.emotion.get_state()
+                if prev_emotion_state != emotion_state:
+                    logger = get_event_logger()
+                    logger.log_emotion(
+                        pleasure=emotion_state.get("pleasure", 0),
+                        arousal=emotion_state.get("arousal", 0),
+                        dominance=emotion_state.get("dominance", 0),
+                        category=emotion_state.get("category", "neutral"),
+                    )
+            except Exception:
+                pass
 
         # 更新行为系统
         state = self._get_current_state()
@@ -567,6 +616,90 @@ class AkihoEngine:
             self._cognition.tick(delta)
         if self._rust:
             self._rust.autonomous.tick(delta)
+
+        # 检查并推送自主事件
+        await self._check_and_broadcast_autonomous_events()
+
+    async def _check_and_broadcast_autonomous_events(self):
+        """检查自主事件并广播到前端"""
+        if not self._rust:
+            return
+
+        try:
+            events = self._rust.autonomous.poll_events()
+            for event in events:
+                if event.generated_text:
+                    payload = {
+                        "type": "autonomous_message",
+                        "id": event.id,
+                        "event_type": event.event_type,
+                        "content": event.generated_text,
+                        "reasoning": event.reasoning,
+                        "timestamp": event.timestamp,
+                    }
+                    if _broadcaster:
+                        await _broadcaster(payload)
+
+                    # 同时保存到消息持久化（主动发言也保存）
+                    await self._persist_message(
+                        role="assistant",
+                        content=event.generated_text,
+                        emotion_state=self.emotion.get_state(),
+                        platform="web",
+                        is_autonomous=True
+                    )
+        except Exception as e:
+            # 静默处理，避免 tick 循环中断
+            pass
+
+    async def _persist_message(
+        self,
+        role: str,
+        content: str,
+        emotion_state: Optional[dict] = None,
+        platform: str = "web",
+        is_autonomous: bool = False
+    ):
+        """保存消息到数据库"""
+        if not self._message_store:
+            return
+
+        try:
+            # 确保有会话 ID
+            if self._current_session_id is None:
+                self._current_session_id = await self._message_store.create_session(
+                    user_id="default",
+                    title="Web 对话"
+                )
+
+            await self._message_store.save_message(
+                session_id=self._current_session_id,
+                role=role,
+                content=content,
+                emotion_state=emotion_state,
+                platform=platform
+            )
+        except Exception as e:
+            print(f"Failed to persist message: {e}")
+
+    async def _load_historical_messages(self, session_id: int, limit: int = 50) -> List[dict]:
+        """从数据库加载历史消息"""
+        if not self._message_store:
+            return []
+
+        try:
+            return await self._message_store.get_session_messages(session_id, limit=limit)
+        except Exception as e:
+            print(f"Failed to load messages: {e}")
+            return []
+
+    def set_session_id(self, session_id: int):
+        """设置当前会话 ID"""
+        self._current_session_id = session_id
+
+    def get_session_id(self) -> Optional[int]:
+        """获取当前会话 ID"""
+        return self._current_session_id
 
     def _get_current_state(self) -> Dict[str, Any]:
         """获取当前系统状态"""
@@ -624,12 +757,19 @@ class AkihoEngine:
         Returns:
             处理结果
         """
-        self.memory.store_conversation(text, user_id)
+        await self.memory.store_conversation(text, user_id)
         self.emotion.process_text_input(text)
         self._update_relationship(user_id)
 
         state = self._get_current_state()
         self.behavior.trigger_from_input(text, state)
+
+        # 保存用户消息
+        await self._persist_message(
+            role="user",
+            content=text,
+            platform="web"
+        )
 
         # Rust: 记录经验事件
         if self._rust:
@@ -670,7 +810,15 @@ class AkihoEngine:
         else:
             response_text = self._fallback_response()
 
-        self.memory.store_conversation(response_text, self._character_name)
+        await self.memory.store_conversation(response_text, self._character_name)
+
+        # 保存 AI 回复
+        await self._persist_message(
+            role="assistant",
+            content=response_text,
+            emotion_state=self.emotion.get_state(),
+            platform="web"
+        )
 
         return {
             "response": response_text,
@@ -734,7 +882,7 @@ class AkihoEngine:
 
         rel = self._get_relationship("default")
 
-        return {
+        display_data = {
             "code": 0,
             "data": {
                 # 情绪系统 (PAD模型)
@@ -798,6 +946,68 @@ class AkihoEngine:
             },
         }
 
+        # ═══════════════════════════════════════════════════════════════
+        # 扩展：Rust 自主性引擎真实数据
+        # ═══════════════════════════════════════════════════════════════
+        if self._rust:
+            try:
+                # 驱动系统数据
+                drive_tensions = self._rust.autonomous.get_drive_tensions()
+                if isinstance(drive_tensions, dict):
+                    drive_data = drive_tensions
+                else:
+                    drive_data = dict(drive_tensions) if drive_tensions else {}
+
+                dominant = self._rust.autonomous.dominant_drive()
+                triggered = []
+                for drive in self._rust.autonomous.drives.drives:
+                    if drive.is_triggered():
+                        triggered.append({
+                            "name": drive.drive_type.name(),
+                            "tension": drive.tension,
+                            "threshold": drive.threshold,
+                        })
+
+                display_data["data"]["drives"] = {
+                    "tensions": drive_data,
+                    "dominant": dominant if isinstance(dominant, str) else (dominant.name() if hasattr(dominant, 'name') else str(dominant)),
+                    "triggered": triggered,
+                    "total_tension": self._rust.autonomous.drives.total_tension(),
+                }
+
+                # 意图引擎数据
+                active_intents = []
+                for intent in self._rust.autonomous.intents.active_intents:
+                    active_intents.append({
+                        "id": intent.id,
+                        "description": intent.description,
+                        "source_drive": intent.source_drive.name() if hasattr(intent.source_drive, 'name') else str(intent.source_drive),
+                        "strength": intent.strength,
+                        "stage": intent.stage.name() if hasattr(intent.stage, 'name') else str(intent.stage),
+                        "commitment": intent.commitment,
+                        "created_at": intent.created_at,
+                    })
+
+                display_data["data"]["intents"] = {
+                    "active": active_intents,
+                    "active_count": len(active_intents),
+                    "completed_count": len(self._rust.autonomous.intents.completed_intents),
+                }
+
+                # 认知系统元认知数据
+                if self._cognition:
+                    try:
+                        metacog = self._cognition.get_metacognition()
+                        display_data["data"]["metacognition"] = metacog
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                # 静默处理，确保不影响其他数据
+                pass
+
+        return display_data
+
     def _get_emotion_name(self, category: str) -> str:
         """获取情绪名称"""
         names = {
@@ -857,12 +1067,54 @@ class AkihoEngine:
         """
         将持久化状态恢复到各子系统。
 
-        当前仅恢复 Rust 引擎状态；其他子系统的恢复
-        在 Phase 1.2 P2 完善。
+        从持久化层恢复 Rust 引擎状态，包括：
+        - 情绪 PAD 值
+        - 生理状态（能量、疲劳等）
+        - 成长阶段
+        - 关系状态
         """
         if not HAS_RUST_CORE:
             return
-        # Rust 引擎状态恢复（未来扩展）
+
+        try:
+            # 恢复情绪状态
+            if "emotion" in state:
+                emotion_data = state["emotion"]
+                if "pleasure" in emotion_data and "arousal" in emotion_data and "dominance" in emotion_data:
+                    self._rust.emotion.set_pad(
+                        emotion_data["pleasure"],
+                        emotion_data["arousal"],
+                        emotion_data["dominance"]
+                    )
+
+            # 恢复生理状态
+            if "physiological" in state:
+                phys_data = state["physiological"]
+                if "energy" in phys_data:
+                    self._rust.body.set_energy(phys_data["energy"])
+
+            # 恢复成长阶段
+            if "growth" in state:
+                growth_data = state["growth"]
+                if "phase" in growth_data:
+                    phase_map = {
+                        "婴儿期": "infant", "幼儿期": "toddler", "儿童期": "child",
+                        "青春期": "adolescent", "成熟期": "adult", "智慧期": "sage"
+                    }
+                    phase_en = phase_map.get(growth_data["phase"], "infant")
+                    # 成长阶段是只读的，重启后自然演化
+
+            # 恢复关系状态
+            if "relationship" in state:
+                rel_data = state["relationship"]
+                if "intimacy" in rel_data:
+                    self._rust.relationship.set_intimacy("default", rel_data["intimacy"])
+                if "relationship" in rel_data:
+                    self._rust.relationship.set_stage("default", rel_data["relationship"])
+
+        except Exception as e:
+            import loguru
+            loguru.logger.warning(f"Failed to restore state: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════

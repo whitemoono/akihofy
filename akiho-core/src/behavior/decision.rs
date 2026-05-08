@@ -46,7 +46,7 @@ impl BehaviorDecider {
         scored.into_iter().next().map(|(id, _)| id)
     }
 
-    fn calculate_final_score(&self, behavior: &Behavior, base_score: f32, ctx: &DecisionContext) -> f32 {
+    fn calculate_final_score(&self, _behavior: &Behavior, base_score: f32, ctx: &DecisionContext) -> f32 {
         let need_score = base_score * self.weights.need_match;
         let energy_penalty = ctx.current_energy * self.weights.energy_cost;
         let emotional_bonus = ctx.emotional_intensity * self.weights.emotional_impact;

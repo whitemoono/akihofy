@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(*)",
+      "PowerShell(wsl --list --running 2>&1)",
+      "PowerShell(wsl --terminate docker-desktop)"
+    ]
+  }
+}

@@ -121,6 +121,16 @@ impl UserRelation {
             }
         }
     }
+
+    /// 设置亲密度（用于状态恢复）
+    pub fn set_intimacy(&mut self, intimacy: f32) {
+        self.trust.intimacy = intimacy.clamp(0.0, 1.0);
+    }
+
+    /// 设置阶段（用于状态恢复）
+    pub fn set_stage(&mut self, stage: RelationshipStage) {
+        self.stage = stage;
+    }
 }
 
 /// 关系管理器
@@ -142,6 +152,18 @@ impl RelationshipManager {
 
     pub fn get(&self, user_id: &str) -> Option<&UserRelation> {
         self.relations.get(user_id)
+    }
+
+    pub fn set_intimacy(&mut self, user_id: &str, intimacy: f32) {
+        if let Some(rel) = self.relations.get_mut(user_id) {
+            rel.set_intimacy(intimacy);
+        }
+    }
+
+    pub fn set_stage(&mut self, user_id: &str, stage: RelationshipStage) {
+        if let Some(rel) = self.relations.get_mut(user_id) {
+            rel.set_stage(stage);
+        }
     }
 }
 

@@ -57,6 +57,8 @@ export function useChat() {
   const [isStreaming, setIsStreaming] = useState(false)
   const typingTimeoutRef = useRef(null)
   const currentStreamingMessageRef = useRef(null)
+  // 用于消息去重
+  const recentMessagesRef = useRef(new Set())
 
   // 保存消息到 localStorage
   useEffect(() => {
@@ -66,6 +68,29 @@ export function useChat() {
   }, [messages])
 
   const addMessage = useCallback((message) => {
+    // 生成消息指纹用于去重
+    const fingerprint = `${message.role}:${message.content}:${message.timestamp || Date.now()}`
+    
+    // 检查是否重复（5秒内的相同消息视为重复）
+    if (recentMessagesRef.current.has(fingerprint)) {
+      console.warn('Duplicate message detected, skipping:', message.content?.substring(0, 50))
+      return
+    }
+    
+    // 添加到去重集合
+    recentMessagesRef.current.add(fingerprint)
+    
+    // 清理过期的去重记录（保留最近 30 条）
+    if (recentMessagesRef.current.size > 30) {
+      const iterator = recentMessagesRef.current.values()
+      recentMessagesRef.current.delete(iterator.next().value)
+    }
+    
+    // 5秒后从去重集合中移除
+    setTimeout(() => {
+      recentMessagesRef.current.delete(fingerprint)
+    }, 5000)
+    
     setMessages(prev => {
       const newMessages = [...prev, {
         id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -96,10 +121,11 @@ export function useChat() {
         })
 
         if (response.ok && response.body) {
-          // 流式响应处理
+          // SSE 流式响应处理
           const reader = response.body.getReader()
           const decoder = new TextDecoder()
           let fullContent = ''
+          let buffer = ''
 
           // 创建初始消息
           const messageId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
@@ -119,15 +145,36 @@ export function useChat() {
             const { done, value } = await reader.read()
             if (done) break
 
-            const chunk = decoder.decode(value, { stream: true })
-            fullContent += chunk
+            buffer += decoder.decode(value, { stream: true })
 
-            // 更新当前消息内容
-            setMessages(prev => prev.map(msg =>
-              msg.id === messageId
-                ? { ...msg, content: fullContent }
-                : msg
-            ))
+            // 按双换行分割 SSE 事件
+            const parts = buffer.split('\n\n')
+            buffer = parts.pop() || '' // 最后一个可能不完整
+
+            for (const part of parts) {
+              if (!part.trim()) continue
+              // 提取 data: 行
+              const lines = part.split('\n')
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  try {
+                    const event = JSON.parse(line.slice(6))
+                    if (event.type === 'text') {
+                      fullContent += event.content
+                      setMessages(prev => prev.map(msg =>
+                        msg.id === messageId
+                          ? { ...msg, content: fullContent }
+                          : msg
+                      ))
+                    } else if (event.type === 'error') {
+                      console.warn('Stream error event:', event.error)
+                    }
+                  } catch (parseErr) {
+                    // 忽略非 JSON 的 data 行
+                  }
+                }
+              }
+            }
           }
 
           // 完成流式响应

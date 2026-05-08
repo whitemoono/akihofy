@@ -1,5 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { Live2DViewer } from './components/Character/Live2DViewer'
+import { ParticleViewer } from './components/Character/ParticleViewer'
+import { BackgroundParticles } from './components/Background/BackgroundParticles'
 import { useChat } from './hooks/useChat'
 import { useCharacter } from './hooks/useCharacter'
 import { useTTS } from './hooks/useTTS'
@@ -116,6 +118,11 @@ function App() {
       <div className="ambient-glow top-[-20%] left-[-10%]" />
       <div className="ambient-glow bottom-[-20%] right-[-10%]" style={{ animationDelay: '-5s' }} />
 
+      {/* 粒子背景 */}
+      {live2dSettings.background.type === 'particle' && (
+        <BackgroundParticles />
+      )}
+
       {/* Live2D 模型渲染层 - 填满整个页面 */}
       <div className="absolute inset-0 z-0 pointer-events-none">
         <div className="w-full h-full relative">
@@ -141,12 +148,20 @@ function App() {
             </a>
           </div>
 
-          {/* Live2D 组件 */}
-          <Live2DViewer
-            mood={mood}
-            isSpeaking={isSpeaking || isPlaying}
-            settings={live2dSettings}
-          />
+          {/* 角色组件 - 根据类型条件渲染 */}
+          {live2dSettings.character.type === 'live2d' ? (
+            <Live2DViewer
+              mood={mood}
+              isSpeaking={isSpeaking || isPlaying}
+              settings={live2dSettings}
+            />
+          ) : (
+            <ParticleViewer
+              mood={mood}
+              isSpeaking={isSpeaking || isPlaying}
+              settings={live2dSettings}
+            />
+          )}
         </div>
       </div>
 

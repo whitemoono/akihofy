@@ -344,6 +344,167 @@ GET /status
 
 ---
 
+## 自主系统接口
+
+### 获取驱动系统状态
+
+```
+GET /api/drives
+```
+
+**响应**
+
+```json
+{
+  "code": 0,
+  "data": {
+    "tensions": {
+      "好奇心": 0.65,
+      "归属需求": 0.45,
+      "能力需求": 0.35,
+      "自主需求": 0.40,
+      "意义需求": 0.25
+    },
+    "dominant": "好奇心",
+    "triggered": [
+      {"name": "好奇心", "tension": 0.65, "threshold": 0.5}
+    ],
+    "total_tension": 0.42,
+    "count": 5
+  }
+}
+```
+
+### 获取思考状态
+
+```
+GET /api/thinking
+```
+
+**响应**
+
+```json
+{
+  "code": 0,
+  "data": {
+    "action": "idle",
+    "query": null,
+    "topic": null,
+    "active_intents": [],
+    "intent_count": 0
+  }
+}
+```
+
+### 获取认知偏差状态
+
+```
+GET /api/cognitive-bias
+```
+
+**响应**
+
+```json
+{
+  "code": 0,
+  "data": {
+    "active_biases": [
+      {"id": "xxx", "type": "confirmation", "name": "确认偏差", "intensity": 0.4}
+    ],
+    "bias_strength": 0.35,
+    "bias_tendencies": {
+      "confirmation": 0.3,
+      "recency": 0.5,
+      "optimism": 0.3,
+      "anchoring": 0.2
+    },
+    "self_awareness": 0.6,
+    "reasoning_confidence": 0.5,
+    "thinking_strategy": "快速思考",
+    "known_blindspots": [],
+    "attention": {
+      "current_focus": [],
+      "sustained_attention": 1.0,
+      "attention_span": 5
+    },
+    "reasoning": {
+      "active_reasoning": ["归纳推理"],
+      "quality": 0.5
+    },
+    "mitigation": "aware"
+  }
+}
+```
+
+### 获取日志
+
+```
+GET /api/logs?log_type=all&limit=100
+```
+
+**响应**
+
+```json
+{
+  "code": 0,
+  "data": {
+    "logs": [
+      {
+        "id": "xxx",
+        "timestamp": "2026-05-07T10:30:00",
+        "type": "system",
+        "level": "info",
+        "message": "系统启动完成",
+        "details": {}
+      }
+    ],
+    "stats": {
+      "system": {"total": 100, "error": 0, "warning": 5},
+      "behavior": {"total": 50},
+      "emotion": {"total": 200},
+      "conversation": {"total": 500}
+    },
+    "type": "all"
+  }
+}
+```
+
+### 获取会话历史
+
+```
+GET /api/history/sessions?folder=技术讨论&pinned=false&limit=50
+```
+
+**响应**
+
+```json
+{
+  "code": 0,
+  "data": {
+    "sessions": [
+      {
+        "id": 1,
+        "user_id": "default",
+        "title": "关于 AI 的讨论",
+        "preview": "讨论了 AI 发展...",
+        "created_at": "2026-05-01T10:00:00",
+        "updated_at": "2026-05-01T10:30:00",
+        "message_count": 12,
+        "tags": ["技术", "AI"],
+        "pinned": false,
+        "archived": false,
+        "folder": "技术讨论"
+      }
+    ],
+    "total": 20,
+    "limit": 50,
+    "offset": 0
+  }
+}
+```
+
+---
+
 ## 错误码
 
 | 码 | 说明 |

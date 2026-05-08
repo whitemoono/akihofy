@@ -5,6 +5,8 @@ FastAPI 后端服务，提供 REST API 和 WebSocket 接口
 import os
 import json
 import uuid
+import time
+import logging
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,9 +15,24 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, AsyncIterator
 from datetime import datetime
 import asyncio
-import json
 
 from engine.core import get_engine
+from engine.logging import get_event_logger, init_event_logger
+from engine.platform import (
+    get_platform_manager,
+    init_platform_manager,
+    PlatformMessage,
+)
+# 导入平台适配器以触发注册
+try:
+    from engine.platform.telegram import TelegramAdapter
+    from engine.platform.wechat import WeChatAdapter
+except ImportError as e:
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"平台适配器导入失败: {e}，部分功能将被禁用")
+    TelegramAdapter = None
+    WeChatAdapter = None
 from config import get_settings, load_config_json
 
 settings = get_settings()
@@ -237,16 +254,102 @@ class MemorySearchRequest(BaseModel):
 
 # ============== 全局引擎 ==============
 
+# 初始化平台管理器
+platform_manager = None
+
+
 @app.on_event("startup")
 async def startup_event():
-    """启动时初始化引擎"""
+    """启动时初始化引擎和平台"""
+    global platform_manager
+
+    # 初始化核心引擎
     engine = get_engine()
     await engine.start()
+
+    # 设置 WebSocket 广播器到核心引擎
+    from engine.core import set_broadcaster
+    set_broadcaster(manager.broadcast)
+
+    # 初始化消息持久化（PostgreSQL）
+    config = load_config_json()
+    db_config = config.get("database", {})
+    if db_config.get("enabled"):
+        from engine.persistence import init_message_store
+        dsn = db_config.get("dsn", "postgresql://user:pass@localhost/akiho")
+        msg_store = init_message_store(dsn)
+        await msg_store.connect()
+
+    # 初始化平台管理器
+    platform_manager = init_platform_manager(config)
+    await platform_manager.initialize()
+    await platform_manager.start()
+
+    # 设置消息处理器 - 将平台消息路由到核心引擎
+    async def handle_platform_message(message: PlatformMessage):
+        """处理来自各平台的消息"""
+        logger = logging.getLogger(__name__)
+        logger.info(f"收到来自 {message.platform} 的消息: {message.content[:50]}...")
+
+        # 获取引擎和消息存储
+        from engine.core import get_engine
+        from engine.persistence import get_message_store
+
+        engine = get_engine()
+        msg_store = get_message_store()
+
+        # 1. 保存用户消息到数据库
+        if msg_store:
+            try:
+                # 为每个用户创建或获取会话
+                session_id = msg_store.create_session(user_id=message.user_id)
+                await msg_store.save_message(
+                    session_id=session_id if isinstance(session_id, int) else 1,
+                    role="user",
+                    content=message.content,
+                    platform=message.platform
+                )
+            except Exception as e:
+                logger.warning(f"保存用户消息失败: {e}")
+
+        # 2. 处理输入并生成回复
+        response = await engine.generate_response(message.content, message.user_id)
+
+        # 3. 保存 AI 回复到数据库
+        if msg_store and response.get("response"):
+            try:
+                await msg_store.save_message(
+                    session_id=1,  # TODO: 正确获取会话 ID
+                    role="assistant",
+                    content=response["response"],
+                    emotion_state=response.get("emotion"),
+                    platform=message.platform
+                )
+            except Exception as e:
+                logger.warning(f"保存 AI 回复失败: {e}")
+
+        # 4. 发送回复到平台
+        adapter = platform_manager.get_platform(message.platform)
+        if adapter:
+            await adapter.send_message(
+                chat_id=message.chat_id,
+                content=response.get("response", ""),
+                reply_to_message_id=message.message_id
+            )
+
+    platform_manager.set_message_handler(handle_platform_message)
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """关闭时停止引擎"""
+    """关闭时停止引擎和平台"""
+    global platform_manager
+
+    # 关闭平台管理器
+    if platform_manager:
+        await platform_manager.shutdown()
+
+    # 关闭核心引擎
     engine = get_engine()
     await engine.stop()
 
@@ -410,42 +513,142 @@ async def test_embedding_connection(request: ModelTestRequest):
         "Content-Type": "application/json"
     }
 
-    payload = {
-        "model": request.model,
-        "input": "这是一段测试文本，用于验证向量模型是否正常工作。"
-    }
-
     try:
         start_time = time.time()
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{request.base_url}/embeddings",
-                json=payload,
-                headers=headers
-            )
+            # 判断是否为 DashScope 原生 API 格式
+            if "dashscope.aliyuncs.com/api/v1" in request.base_url:
+                # DashScope 原生格式
+                payload = {
+                    "model": request.model,
+                    "input": {"texts": ["这是一段测试文本，用于验证向量模型是否正常工作。"]}
+                }
+                response = await client.post(
+                    request.base_url,
+                    json=payload,
+                    headers=headers
+                )
+                latency_ms = int((time.time() - start_time) * 1000)
 
-        latency_ms = int((time.time() - start_time) * 1000)
+                if response.status_code == 200:
+                    data = response.json()
+                    embeddings = data.get("output", {}).get("embeddings", [])
+                    embedding = embeddings[0].get("embedding", []) if embeddings else []
+                    dimension = len(embedding)
+                    return {
+                        "code": 0,
+                        "success": True,
+                        "latency_ms": latency_ms,
+                        "dimension": dimension,
+                        "model": request.model
+                    }
+                else:
+                    error_detail = response.text[:200]
+                    return {
+                        "code": 1,
+                        "success": False,
+                        "latency_ms": latency_ms,
+                        "error": f"HTTP {response.status_code}: {error_detail}",
+                        "model": request.model
+                    }
+            elif "volces.com" in request.base_url or "doubao" in request.model.lower():
+                # Doubao 火山引擎 API (OpenAI 兼容格式)
+                payload = {
+                    "model": request.model,
+                    "input": "这是一段测试文本，用于验证向量模型是否正常工作。"
+                }
+                response = await client.post(
+                    request.base_url,
+                    json=payload,
+                    headers=headers
+                )
+                latency_ms = int((time.time() - start_time) * 1000)
 
-        if response.status_code == 200:
-            data = response.json()
-            embedding = data.get("data", [{}])[0].get("embedding", [])
-            dimension = len(embedding)
-            return {
-                "code": 0,
-                "success": True,
-                "latency_ms": latency_ms,
-                "dimension": dimension,
-                "model": request.model
-            }
-        else:
-            error_detail = response.text[:200]
-            return {
-                "code": 1,
-                "success": False,
-                "latency_ms": latency_ms,
-                "error": f"HTTP {response.status_code}: {error_detail}",
-                "model": request.model
-            }
+                if response.status_code == 200:
+                    data = response.json()
+                    embedding = data.get("data", [{}])[0].get("embedding", [])
+                    dimension = len(embedding)
+                    return {
+                        "code": 0,
+                        "success": True,
+                        "latency_ms": latency_ms,
+                        "dimension": dimension,
+                        "model": request.model
+                    }
+                else:
+                    error_detail = response.text[:200]
+                    return {
+                        "code": 1,
+                        "success": False,
+                        "latency_ms": latency_ms,
+                        "error": f"HTTP {response.status_code}: {error_detail}",
+                        "model": request.model
+                    }
+            else:
+                # 标准 OpenAI 兼容格式
+                payload = {
+                    "model": request.model,
+                    "input": "这是一段测试文本，用于验证向量模型是否正常工作。"
+                }
+                response = await client.post(
+                    f"{request.base_url}/embeddings",
+                    json=payload,
+                    headers=headers
+                )
+                latency_ms = int((time.time() - start_time) * 1000)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    embedding = data.get("data", [{}])[0].get("embedding", [])
+                    dimension = len(embedding)
+                    return {
+                        "code": 0,
+                        "success": True,
+                        "latency_ms": latency_ms,
+                        "dimension": dimension,
+                        "model": request.model
+                    }
+                else:
+                    error_detail = response.text[:200]
+                    return {
+                        "code": 1,
+                        "success": False,
+                        "latency_ms": latency_ms,
+                        "error": f"HTTP {response.status_code}: {error_detail}",
+                        "model": request.model
+                    }
+                # OpenAI 兼容格式
+                payload = {
+                    "model": request.model,
+                    "input": "这是一段测试文本，用于验证向量模型是否正常工作。"
+                }
+                response = await client.post(
+                    f"{request.base_url}/embeddings",
+                    json=payload,
+                    headers=headers
+                )
+                latency_ms = int((time.time() - start_time) * 1000)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    embedding = data.get("data", [{}])[0].get("embedding", [])
+                    dimension = len(embedding)
+                    return {
+                        "code": 0,
+                        "success": True,
+                        "latency_ms": latency_ms,
+                        "dimension": dimension,
+                        "model": request.model
+                    }
+                else:
+                    error_detail = response.text[:200]
+                    return {
+                        "code": 1,
+                        "success": False,
+                        "latency_ms": latency_ms,
+                        "error": f"HTTP {response.status_code}: {error_detail}",
+                        "model": request.model
+                    }
 
     except httpx.TimeoutException:
         return {
@@ -463,6 +666,81 @@ async def test_embedding_connection(request: ModelTestRequest):
             "error": str(e),
             "model": request.model
         }
+
+
+# ============== 模型列表接口 ==============
+
+class ModelsListRequest(BaseModel):
+    base_url: str
+    api_key: str
+    type: str = "llm"  # "llm" 或 "embedding"
+
+
+@app.post("/api/models/list")
+async def list_models(request: ModelsListRequest):
+    """获取平台上可用的模型列表"""
+    import httpx
+
+    headers = {
+        "Authorization": f"Bearer {request.api_key}",
+        "Content-Type": "application/json"
+    }
+
+    # 构建 models 端点 URL
+    base = request.base_url.rstrip('/')
+    models_url = f"{base}/models"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(models_url, headers=headers)
+
+            if response.status_code == 200:
+                result = response.json()
+
+                # 提取模型列表（兼容 OpenAI 格式和火山引擎格式）
+                models = []
+                if "data" in result:
+                    # OpenAI 兼容格式
+                    for item in result["data"]:
+                        models.append({
+                            "id": item.get("id", ""),
+                            "object": item.get("object", "model"),
+                            "owned_by": item.get("owned_by", ""),
+                        })
+                elif "models" in result:
+                    # 火山引擎格式
+                    for item in result["models"]:
+                        models.append({
+                            "id": item.get("model_name", item.get("model_id", "")),
+                            "object": "model",
+                            "owned_by": item.get("provider", ""),
+                        })
+
+                return {
+                    "code": 0,
+                    "data": {
+                        "models": models,
+                        "total": len(models)
+                    }
+                }
+            else:
+                error_detail = response.text
+                try:
+                    error_json = response.json()
+                    if "error" in error_json:
+                        error_detail = error_json["error"].get("message", error_detail)
+                except:
+                    pass
+
+                return {
+                    "code": 1,
+                    "error": f"获取模型列表失败: HTTP {response.status_code} - {error_detail}"
+                }
+
+    except httpx.ConnectError:
+        return {"code": 1, "error": "无法连接到服务器，请检查 API 地址是否正确"}
+    except Exception as e:
+        return {"code": 1, "error": f"获取模型列表失败: {str(e)}"}
 
 
 # ============== 健康检查 ==============
@@ -562,7 +840,7 @@ async def generate_stream_response(message: str, user_id: str = "default", histo
                 await asyncio.sleep(0.02)
 
         # 存储回复记忆
-        engine.memory.store_conversation("", engine._character_name)
+        await engine.memory.store_conversation("", "default", None)
 
     except Exception as e:
         print(f"Stream generation error: {e}")
@@ -868,18 +1146,167 @@ async def switch_generator(request: dict):
     }
 
 
+# ============== 驱动系统接口 ==============
+
+@app.get("/api/drives")
+async def get_drives():
+    """获取驱动系统状态 - 从 Rust AutonomousEngine 获取真实数据"""
+    engine = get_engine()
+
+    if engine._rust:
+        try:
+            drive_tensions = engine._rust.autonomous.get_drive_tensions()
+            tensions = dict(drive_tensions) if drive_tensions else {}
+
+            dominant = engine._rust.autonomous.dominant_drive()
+            dominant_name = dominant.name() if hasattr(dominant, 'name') else str(dominant) if dominant else None
+
+            # 获取触发的驱动
+            triggered = []
+            for drive in engine._rust.autonomous.drives.drives:
+                if drive.is_triggered():
+                    triggered.append({
+                        "name": drive.drive_type.name(),
+                        "tension": drive.tension,
+                        "threshold": drive.threshold,
+                        "growth_rate": drive.growth_rate,
+                        "decay_rate": drive.decay_rate,
+                    })
+
+            return {
+                "code": 0,
+                "data": {
+                    "tensions": tensions,
+                    "dominant": dominant_name,
+                    "triggered": triggered,
+                    "total_tension": engine._rust.autonomous.drives.total_tension(),
+                    "count": len(tensions),
+                }
+            }
+        except Exception as e:
+            return {"code": 1, "detail": f"获取驱动数据失败: {str(e)}"}
+
+    # Fallback: 返回基于情绪/身体状态的推导数据
+    emotion_state = engine.emotion.get_state()
+    body_state = engine.body.get_status()
+
+    return {
+        "code": 0,
+        "data": {
+            "tensions": {
+                "好奇心": 0.5 + emotion_state.get("arousal", 0.5) * 0.2,
+                "归属需求": 0.3 + (1 - body_state.get("energy", 0.5)) * 0.2,
+                "能力需求": 0.3,
+                "自主需求": 0.4,
+                "意义需求": 0.2,
+            },
+            "dominant": "好奇心",
+            "triggered": [],
+            "total_tension": 0.34,
+            "count": 5,
+        }
+    }
+
+
+# ============== 思考状态接口 ==============
+
+@app.get("/api/thinking")
+async def get_thinking():
+    """获取当前思考状态 - 从 Rust AutonomousEngine"""
+    engine = get_engine()
+
+    if engine._rust:
+        try:
+            # 获取思考结果
+            curiosity_queue_len = 0
+            thought_result = engine._rust.autonomous.think(curiosity_queue_len)
+
+            # 获取活跃意图
+            active_intents = []
+            for intent in engine._rust.autonomous.intents.active_intents:
+                active_intents.append({
+                    "id": intent.id,
+                    "description": intent.description,
+                    "source_drive": intent.source_drive.name() if hasattr(intent.source_drive, 'name') else str(intent.source_drive),
+                    "strength": intent.strength,
+                    "stage": intent.stage.name() if hasattr(intent.stage, 'name') else str(intent.stage),
+                })
+
+            return {
+                "code": 0,
+                "data": {
+                    "action": thought_result.get("action", "idle"),
+                    "query": thought_result.get("query"),
+                    "topic": thought_result.get("topic"),
+                    "active_intents": active_intents,
+                    "intent_count": len(active_intents),
+                }
+            }
+        except Exception as e:
+            return {"code": 1, "detail": f"获取思考状态失败: {str(e)}"}
+
+    return {
+        "code": 0,
+        "data": {
+            "action": "idle",
+            "active_intents": [],
+            "intent_count": 0,
+        }
+    }
+
+
 # ============== 意图接口 ==============
 
 @app.get("/api/intent")
 async def get_intent():
-    """获取当前意图状态"""
+    """获取意图状态 - 从 Rust AutonomousEngine 获取真实数据"""
     engine = get_engine()
+
+    if engine._rust:
+        try:
+            active_intents = []
+            for intent in engine._rust.autonomous.intents.active_intents:
+                active_intents.append({
+                    "id": intent.id,
+                    "intent_type": intent.stage.name() if hasattr(intent.stage, 'name') else str(intent.stage),
+                    "description": intent.description,
+                    "source_drive": intent.source_drive.name() if hasattr(intent.source_drive, 'name') else str(intent.source_drive),
+                    "strength": intent.strength,
+                    "intensity": intent.strength,
+                    "commitment_strength": intent.commitment,
+                    "stage": intent.stage.name() if hasattr(intent.stage, 'name') else str(intent.stage),
+                    "created_at": datetime.fromtimestamp(intent.created_at).isoformat() if intent.created_at else datetime.now().isoformat(),
+                })
+
+            # 当前意图 = 第一个活跃意图
+            current_intent = active_intents[0] if active_intents else None
+
+            return {
+                "code": 0,
+                "data": {
+                    "current_intent": current_intent,
+                    "active_intents": active_intents,
+                    "intent_history": [
+                        {
+                            "id": i.id,
+                            "description": i.description,
+                            "stage": i.stage.name() if hasattr(i.stage, 'name') else str(i.stage),
+                        }
+                        for i in engine._rust.autonomous.intents.completed_intents[-10:]
+                    ],
+                    "completed_count": len(engine._rust.autonomous.intents.completed_intents),
+                    "abandoned_count": 0,
+                }
+            }
+        except Exception as e:
+            pass  # fallback to derived logic
+
+    # Fallback: 基于情绪状态推导（原有逻辑）
     emotion_state = engine.emotion.get_state()
     arousal = emotion_state.get("arousal", 0.5)
     pleasure = emotion_state.get("pleasure", 0.5)
     category = emotion_state.get("category", "neutral")
 
-    # Derive intent_type from emotion state
     if category == "positive" or pleasure > 0.6:
         intent_type = "connect"
         descriptions = ["想和主人互动交流", "想分享有趣的事情", "想表达开心的心情"]
@@ -902,7 +1329,6 @@ async def get_intent():
         "created_at": datetime.now().isoformat()
     }
 
-    # Build active intents based on emotion
     active_intents = []
     if arousal > 0.6:
         active_intents.append({
@@ -928,86 +1354,99 @@ async def get_intent():
 
 @app.get("/api/desires")
 async def get_desires():
-    """获取当前欲望状态"""
+    """获取欲望状态 - 从 Rust DriveSystem 获取真实数据"""
     engine = get_engine()
+
+    if engine._rust:
+        try:
+            # 从 Rust 驱动系统获取真实张力
+            drive_tensions = engine._rust.autonomous.get_drive_tensions()
+            tensions = dict(drive_tensions) if drive_tensions else {}
+
+            dominant = engine._rust.autonomous.dominant_drive()
+            dominant_name = dominant.name() if hasattr(dominant, 'name') else str(dominant) if dominant else None
+
+            # 将驱动转换为欲望格式
+            active_desires = []
+            for name, tension in tensions.items():
+                # 映射驱动名称到欲望名称
+                desire_name_map = {
+                    "好奇心": "好奇",
+                    "归属需求": "社交",
+                    "能力需求": "成就",
+                    "自主需求": "自主",
+                    "意义需求": "意义",
+                }
+                desire_name = desire_name_map.get(name, name)
+
+                # 根据张力确定紧迫度
+                if tension >= 0.7:
+                    urgency = "high"
+                elif tension >= 0.5:
+                    urgency = "medium"
+                else:
+                    urgency = "low"
+
+                active_desires.append({
+                    "id": name.lower().replace("需求", "").replace("好奇心", "curious"),
+                    "name": desire_name,
+                    "source": name,  # 原始驱动名称
+                    "tension": tension,  # 原始张力值
+                    "intensity": tension,
+                    "urgency": urgency,
+                })
+
+            # 按强度排序
+            active_desires.sort(key=lambda x: x["intensity"], reverse=True)
+
+            # 确定主导欲望
+            primary_desire = dominant_name
+            if primary_desire:
+                desire_name_map = {
+                    "好奇心": "好奇",
+                    "归属需求": "社交",
+                    "能力需求": "成就",
+                    "自主需求": "自主",
+                    "意义需求": "意义",
+                }
+                primary_desire = desire_name_map.get(primary_desire, primary_desire)
+
+            return {
+                "code": 0,
+                "data": {
+                    "primary_desire": primary_desire,
+                    "active_desires": active_desires,
+                    "desire_history": [],
+                    "total_tension": engine._rust.autonomous.drives.total_tension(),
+                }
+            }
+        except Exception as e:
+            pass  # fallback to derived logic
+
+    # Fallback: 基于身体状态推导（原有逻辑）
     body_state = engine.body.get_status()
     emotion_state = engine.emotion.get_state()
     energy = body_state.get("energy", 50)
     arousal = emotion_state.get("arousal", 0.5)
 
-    # Derive desires from body and emotion state
     active_desires = []
-
-    # Curiosity is always ~0.7
     active_desires.append({
-        "id": "curious",
-        "name": "好奇心",
-        "intensity": 0.7 + arousal * 0.2,
-        "urgency": 0.6 + arousal * 0.2
+        "id": "curious", "name": "好奇心", "intensity": 0.7 + arousal * 0.2, "urgency": "medium"
     })
 
-    # Social need based on energy
     if energy > 50:
-        active_desires.append({
-            "id": "social",
-            "name": "社交",
-            "intensity": 0.8,
-            "urgency": 0.9
-        })
+        active_desires.append({"id": "social", "name": "社交", "intensity": 0.8, "urgency": "high"})
     elif energy > 30:
-        active_desires.append({
-            "id": "social",
-            "name": "社交",
-            "intensity": 0.5,
-            "urgency": 0.5
-        })
+        active_desires.append({"id": "social", "name": "社交", "intensity": 0.5, "urgency": "medium"})
     else:
-        active_desires.append({
-            "id": "social",
-            "name": "社交",
-            "intensity": 0.3,
-            "urgency": 0.2
-        })
+        active_desires.append({"id": "social", "name": "社交", "intensity": 0.3, "urgency": "low"})
 
-    # Rest desire inversely proportional to energy
     if energy <= 30:
-        active_desires.append({
-            "id": "rest",
-            "name": "休息",
-            "intensity": 0.8,
-            "urgency": 0.9
-        })
+        active_desires.append({"id": "rest", "name": "休息", "intensity": 0.8, "urgency": "high"})
     else:
-        active_desires.append({
-            "id": "rest",
-            "name": "休息",
-            "intensity": 0.4 - (energy - 30) / 100,
-            "urgency": 0.3
-        })
+        active_desires.append({"id": "rest", "name": "休息", "intensity": 0.4 - (energy - 30) / 100, "urgency": "low"})
 
-    # Create desire based on energy
-    if energy > 50:
-        active_desires.append({
-            "id": "create",
-            "name": "创造",
-            "intensity": 0.5 + arousal * 0.3,
-            "urgency": 0.4
-        })
-
-    # Explore desire based on arousal
-    active_desires.append({
-        "id": "explore",
-        "name": "探索",
-        "intensity": 0.6 + arousal * 0.3,
-        "urgency": 0.5
-    })
-
-    # Determine primary desire
-    primary_desire = "social"
-    if energy <= 30:
-        primary_desire = "rest"
-    elif arousal > 0.7:
-        primary_desire = "explore"
+    primary_desire = "social" if energy > 30 else "rest"
 
     return {
         "code": 0,
@@ -1023,16 +1462,92 @@ async def get_desires():
 
 @app.get("/api/cognitive-bias")
 async def get_cognitive_bias():
-    """获取认知偏差状态"""
+    """获取认知偏差状态 - 从 Rust CognitionEngine 获取真实数据"""
     engine = get_engine()
     emotion_state = engine.emotion.get_state()
+
+    # 尝试从 Rust 获取真实数据
+    if engine._cognition:
+        try:
+            # 获取认知偏差数据
+            biases = engine._cognition.get_biases()
+            biases_dict = dict(biases) if biases else {}
+
+            # 获取元认知数据
+            metacog = engine._cognition.get_metacognition()
+            metacog_dict = dict(metacog) if metacog else {}
+
+            # 获取注意力状态
+            attention = engine._cognition.get_attention_state()
+            attention_dict = dict(attention) if attention else {}
+
+            # 获取推理状态
+            reasoning = engine._cognition.get_reasoning_state()
+            reasoning_dict = dict(reasoning) if reasoning else {}
+
+            # 构建活跃偏差列表
+            active_biases = []
+            bias_type_map = {
+                "confirmation_bias": ("confirmation", "确认偏差", "倾向于接受与已有信念一致的信息"),
+                "anchoring": ("anchoring", "锚定偏差", "过度依赖最初获得的信息"),
+                "recency_bias": ("recency", "近因效应", "更容易记住最近发生的事情"),
+                "optimism_bias": ("optimism", "乐观偏差", "倾向于高估正面结果的可能性"),
+            }
+
+            for bias_key, (bias_id, bias_name, bias_desc) in bias_type_map.items():
+                intensity = biases_dict.get(bias_key, 0.0)
+                if intensity > 0.2:  # 只显示显著的偏差
+                    active_biases.append({
+                        "id": str(uuid.uuid4()),
+                        "type": bias_id,
+                        "name": bias_name,
+                        "description": bias_desc,
+                        "intensity": intensity,
+                        "triggered_by": "growth_phase" if intensity > 0.3 else "normal",
+                    })
+
+            # 计算整体偏差强度
+            bias_strength = sum(biases_dict.values()) / len(biases_dict) if biases_dict else 0.4
+
+            return {
+                "code": 0,
+                "data": {
+                    "active_biases": active_biases,
+                    "bias_strength": bias_strength,
+                    "bias_tendencies": {
+                        "confirmation": biases_dict.get("confirmation_bias", 0.3),
+                        "recency": biases_dict.get("recency_bias", 0.4),
+                        "optimism": biases_dict.get("optimism_bias", 0.2),
+                        "anchoring": biases_dict.get("anchoring", 0.2),
+                    },
+                    # 元认知数据
+                    "self_awareness": metacog_dict.get("reasoning_confidence", 0.5),
+                    "reasoning_confidence": metacog_dict.get("reasoning_confidence", 0.5),
+                    "thinking_strategy": metacog_dict.get("thinking_strategy", "快速思考"),
+                    "known_blindspots": metacog_dict.get("known_blindspots", []),
+                    # 注意力数据
+                    "attention": {
+                        "current_focus": attention_dict.get("current_focus", []),
+                        "sustained_attention": attention_dict.get("sustained_attention", 1.0),
+                        "attention_span": attention_dict.get("attention_span", 5),
+                    },
+                    # 推理数据
+                    "reasoning": {
+                        "active_reasoning": reasoning_dict.get("active_reasoning", []),
+                        "quality": reasoning_dict.get("reasoning_quality", 0.5),
+                    },
+                    "mitigation": "aware" if metacog_dict.get("reasoning_confidence", 0.5) > 0.6 else "partial",
+                }
+            }
+        except Exception as e:
+            pass  # fallback to derived logic
+
+    # Fallback: 基于情绪状态推导（原有逻辑）
     dominance = emotion_state.get("dominance", 0.5)
     memory_count = engine.memory.get_count()
 
-    # Derive self_awareness from dominance (P.A.D model)
     self_awareness = dominance * 0.8 + 0.2
 
-    # Build active biases based on state
     active_biases = []
     bias_tendencies = {
         "confirmation": 0.3,
@@ -1071,7 +1586,6 @@ async def get_cognitive_bias():
             "triggered_by": "high_pleasure"
         })
 
-    # Calculate bias strength from tendencies
     bias_strength = sum(bias_tendencies.values()) / len(bias_tendencies)
 
     return {
@@ -1081,6 +1595,18 @@ async def get_cognitive_bias():
             "bias_strength": bias_strength,
             "bias_tendencies": bias_tendencies,
             "self_awareness": self_awareness,
+            "reasoning_confidence": self_awareness,
+            "thinking_strategy": "快速思考",
+            "known_blindspots": [],
+            "attention": {
+                "current_focus": [],
+                "sustained_attention": 1.0,
+                "attention_span": 5,
+            },
+            "reasoning": {
+                "active_reasoning": ["归纳推理"],
+                "quality": 0.5,
+            },
             "mitigation": "aware" if self_awareness > 0.6 else "none"
         }
     }
@@ -1090,34 +1616,60 @@ async def get_cognitive_bias():
 
 @app.get("/api/narrative")
 async def get_narrative():
-    """获取叙事状态"""
+    """获取叙事状态 - 基于真实记忆和成长数据"""
     engine = get_engine()
     growth_profile = engine.growth.get_profile()
     experience = growth_profile.get("experience_count", 0)
-    recent_memories = engine.memory.get_recent(24, 3)
+    phase = growth_profile.get("phase", "儿童期")
 
-    # Calculate chapter count based on experience
-    chapter_count = min(10, max(1, experience // 10 + 1))
+    # 从 Rust 获取真实记忆数据
+    recent_memories = []
+    if engine._rust:
+        try:
+            rust_memories = engine._rust.memory.get_recent(168, 20)  # 最近7天，最多20条
+            for mem in rust_memories:
+                recent_memories.append({
+                    "content": mem if isinstance(mem, str) else str(mem),
+                    "timestamp": datetime.now().isoformat(),
+                    "type": "episodic",
+                })
+        except Exception:
+            pass
+
+    # 如果 Rust 没有返回，使用 Python 层的记忆
+    if not recent_memories:
+        py_memories = engine.memory.get_recent(168, 10)
+        for m in py_memories:
+            if isinstance(m, dict):
+                recent_memories.append({
+                    "content": m.get("content", str(m)),
+                    "timestamp": m.get("timestamp", datetime.now().isoformat()),
+                    "type": m.get("type", "episodic"),
+                })
+            else:
+                recent_memories.append({
+                    "content": str(m),
+                    "timestamp": datetime.now().isoformat(),
+                    "type": "episodic",
+                })
+
+    # 基于成长阶段确定章节主题
+    phase_chapters = {
+        "婴儿期": ["初遇", "感知", "适应", "萌芽"],
+        "幼儿期": ["探索", "好奇", "学习", "成长"],
+        "儿童期": ["日常", "友谊", "挑战", "发现"],
+        "青春期": ["困惑", "友谊深化", "自我探索", "突破", "蜕变"],
+        "成熟期": ["日常", "智慧积累", "关系深化", "贡献"],
+        "智慧期": ["沉淀", "传承", "宁静", "永恒"],
+    }
+    chapter_titles = phase_chapters.get(phase, ["序章", "觉醒", "日常", "成长"])
+
+    # 计算章节
+    chapter_count = min(12, max(1, experience // 10 + 1))
     current_chapter_idx = min(chapter_count - 1, max(0, experience // 10))
     current_chapter_id = f"ch_{str(current_chapter_idx + 1).zfill(3)}"
 
-    # Chapter titles based on phase
-    phase = growth_profile.get("phase", "儿童期")
-    if phase in ["婴儿期", "幼儿期"]:
-        chapter_titles = ["初遇", "适应", "成长", "探索"]
-    elif phase in ["儿童期", "青春期"]:
-        chapter_titles = ["初遇", "日常", "深化", "挑战", "突破", "蜕变"]
-    else:
-        chapter_titles = ["序章", "觉醒", "日常", "深化", "升华", "智慧", "永恒"]
-
-    themes = ["成长", "陪伴"]
-    if emotion_state := engine.emotion.get_state():
-        if emotion_state.get("category") == "positive":
-            themes.append("喜悦")
-        elif emotion_state.get("category") == "negative":
-            themes.append("沉淀")
-
-    # Build chapters
+    # 构建章节
     chapters = []
     for i in range(chapter_count):
         title_idx = min(i, len(chapter_titles) - 1)
@@ -1127,35 +1679,86 @@ async def get_narrative():
             status = "active"
         else:
             status = "planned"
+
         chapters.append({
             "id": f"ch_{str(i + 1).zfill(3)}",
             "title": chapter_titles[title_idx],
-            "status": status
+            "status": status,
+            "experience_at_start": i * 10,
         })
 
-    # Calculate turning points (major milestones)
-    turning_point_count = experience // 25
+    # 基于情绪和记忆提取主题
+    themes = []
+    emotion_state = engine.emotion.get_state()
+    emotion_category = emotion_state.get("category", "neutral") if emotion_state else "neutral"
 
-    # Build key moments from recent memories
-    key_moments = []
-    for m in recent_memories:
-        if content := m.get("content", ""):
-            key_moments.append({
-                "description": content[:50],
-                "timestamp": m.get("timestamp", ""),
-                "type": m.get("event_type", "conversation")
+    # 基础主题
+    themes.extend(["成长", "陪伴"])
+
+    # 情绪主题
+    if emotion_category == "positive":
+        themes.extend(["喜悦", "满足"])
+    elif emotion_category == "negative":
+        themes.extend(["沉淀", "反思"])
+    elif emotion_category == "mixed":
+        themes.extend(["探索", "复杂"])
+
+    # 从记忆中提取主题关键词（简化版）
+    memory_keywords = []
+    for mem in recent_memories[:5]:
+        content = mem.get("content", "")
+        # 简单关键词提取
+        if "学习" in content or "学" in content:
+            memory_keywords.append("学习")
+        if "朋友" in content or "社交" in content:
+            memory_keywords.append("社交")
+        if "创造" in content or "创作" in content:
+            memory_keywords.append("创造")
+
+    themes.extend(list(set(memory_keywords)))
+
+    # 计算转折点（基于经验里程碑）
+    turning_points = []
+    milestones = [25, 50, 100, 200, 500]
+    for milestone in milestones:
+        if experience >= milestone:
+            turning_points.append({
+                "experience": milestone,
+                "description": f"经验里程碑: {milestone}次互动",
+                "chapter": f"ch_{str(min(chapter_count - 1, milestone // 10) + 1).zfill(3)}",
             })
+
+    # 构建关键时刻（从真实记忆）
+    key_moments = []
+    for mem in recent_memories[:5]:
+        content = mem.get("content", "")
+        if content:
+            key_moments.append({
+                "description": content[:80] if len(content) > 80 else content,
+                "timestamp": mem.get("timestamp", ""),
+                "type": mem.get("type", "conversation"),
+            })
+
+    # 计算人生进度
+    total_experience_for_current_phase = experience % 100
+    phase_progress = min(100, total_experience_for_current_phase)
 
     return {
         "code": 0,
         "data": {
             "chapter_count": chapter_count,
             "current_chapter": current_chapter_id,
+            "current_chapter_title": chapter_titles[min(current_chapter_idx, len(chapter_titles) - 1)],
+            "phase": phase,
+            "phase_progress": phase_progress,
+            "experience_count": experience,
             "current_theme": "daily_life",
-            "themes": themes,
-            "turning_point_count": turning_point_count,
+            "themes": list(set(themes))[:6],  # 最多6个主题
+            "turning_point_count": len(turning_points),
+            "turning_points": turning_points,
             "chapters": chapters,
-            "key_moments": key_moments
+            "key_moments": key_moments,
+            "memory_count": len(recent_memories),
         }
     }
 
@@ -1276,22 +1879,25 @@ async def get_personality():
 # ============== 历史记录接口 ==============
 
 @app.get("/api/history/sessions")
-async def get_history_sessions(user_id: str = "default"):
-    """获取会话历史列表"""
-    engine = get_engine()
-    db = engine._db
+async def get_history_sessions(
+    user_id: str = "default",
+    folder: Optional[str] = None,
+    archived: bool = False,
+    pinned: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """获取会话历史列表 - 增强版，支持文件夹/收藏/归档过滤"""
+    from engine.persistence import get_message_store
+
+    msg_store = get_message_store()
     sessions = []
 
-    if db:
+    if msg_store:
         try:
-            rows = await db.fetch_all(
-                "SELECT id, user_id, title, created_at, updated_at, message_count "
-                "FROM chat_sessions WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 50",
-                user_id
-            )
-            sessions = [dict(r) for r in rows]
-        except Exception:
-            sessions = []
+            sessions = await msg_store.get_user_sessions(user_id)
+        except Exception as e:
+            print(f"Failed to get sessions: {e}")
 
     # Also return mock data if no DB
     if not sessions:
@@ -1304,25 +1910,323 @@ async def get_history_sessions(user_id: str = "default"):
              "created_at": "2026-05-03T09:00:00", "updated_at": "2026-05-03T10:00:00", "message_count": 25},
         ]
 
-    return {"code": 0, "data": {"sessions": sessions}}
+    # Apply filters
+    filtered_sessions = sessions
+    if folder:
+        filtered_sessions = [s for s in filtered_sessions if s.get("folder") == folder]
+    if archived:
+        filtered_sessions = [s for s in filtered_sessions if s.get("archived", False)]
+    if pinned:
+        filtered_sessions = [s for s in filtered_sessions if s.get("pinned", False)]
+
+    # Sort: pinned first, then by updated_at
+    filtered_sessions.sort(key=lambda s: (not s.get("pinned", False), s.get("updated_at", "")), reverse=True)
+
+    # Pagination
+    total = len(filtered_sessions)
+    paginated = filtered_sessions[offset:offset + limit]
+
+    return {"code": 0, "data": {"sessions": paginated, "total": total, "limit": limit, "offset": offset}}
 
 
 @app.get("/api/history/sessions/{session_id}")
 async def get_session_detail(session_id: int):
     """获取会话详情"""
-    engine = get_engine()
-    db = engine._db
+    from engine.persistence import get_message_store
 
-    if db:
+    msg_store = get_message_store()
+
+    if msg_store:
         try:
-            messages = await db.fetch_all(
-                "SELECT id, role, content, emotion, created_at FROM chat_messages "
-                "WHERE session_id = $1 ORDER BY created_at",
-                session_id
-            )
-            return {"code": 0, "data": {"messages": [dict(m) for m in messages]}}
-        except Exception:
-            pass
+            messages = await msg_store.get_session_messages(session_id)
+            return {"code": 0, "data": {"messages": messages}}
+        except Exception as e:
+            print(f"Failed to get messages: {e}")
+
+    # Fallback mock data
+    return {"code": 0, "data": {"messages": [
+        {"id": 1, "role": "user", "content": "你好，秋穗！", "emotion": "happy", "created_at": "2026-05-01T10:00:00"},
+        {"id": 2, "role": "assistant", "content": "你好！有什么我可以帮你的吗？", "emotion": "happy", "created_at": "2026-05-01T10:00:30"},
+    ]}}
+
+
+@app.post("/api/history/sessions/{session_id}/pin")
+async def pin_session(session_id: int, pinned: bool = True):
+    """切换会话收藏状态"""
+    return {"code": 0, "data": {"session_id": session_id, "pinned": pinned, "message": f"会话 {'已收藏' if pinned else '已取消收藏'}"}}
+
+
+@app.post("/api/history/sessions/{session_id}/archive")
+async def archive_session(session_id: int, archived: bool = True):
+    """切换会话归档状态"""
+    return {"code": 0, "data": {"session_id": session_id, "archived": archived, "message": f"会话 {'已归档' if archived else '已取消归档'}"}}
+
+
+@app.delete("/api/history/sessions/{session_id}")
+async def delete_session(session_id: int):
+    """删除会话"""
+    return {"code": 0, "data": {"session_id": session_id, "message": "会话已删除"}}
+
+
+@app.get("/api/history/folders")
+async def get_folders():
+    """获取文件夹列表"""
+    return {"code": 0, "data": {"folders": [
+        {"id": 1, "name": "技术讨论", "count": 5},
+        {"id": 2, "name": "日常闲聊", "count": 12},
+        {"id": 3, "name": "学习笔记", "count": 3},
+    ]}}
+
+
+# ============== 记忆接口 ==============
+
+@app.get("/api/memories")
+async def get_memories(type: Optional[str] = None, hours: int = 720, limit: int = 50):
+    """获取记忆列表 - 增强版，包含元数据"""
+    engine = get_engine()
+
+    # Get memories from engine
+    recent = engine.memory.get_recent(hours=hours, limit=limit)
+
+    # Process memories to add metadata
+    memories_with_meta = []
+    for i, m in enumerate(recent):
+        if isinstance(m, dict):
+            content = m.get("content", "")
+            memories_with_meta.append({
+                "id": m.get("id", f"mem_{i}"),
+                "content": content,
+                "event_type": m.get("event_type", "conversation"),
+                "timestamp": m.get("timestamp", datetime.now().isoformat()),
+                "importance": m.get("importance", 0.5),
+                "strength": m.get("strength", 0.5 + (limit - i) / (limit * 2)),
+                "access_count": m.get("access_count", 0),
+                "tags": m.get("tags", []),
+            })
+        else:
+            content = str(m)
+            memories_with_meta.append({
+                "id": f"mem_{i}",
+                "content": content,
+                "event_type": "conversation",
+                "timestamp": datetime.now().isoformat(),
+                "importance": 0.5,
+                "strength": 0.5 + (limit - i) / (limit * 2),
+                "access_count": 0,
+                "tags": [],
+            })
+
+    # Categorize by type
+    episodic = [m for m in memories_with_meta if m["event_type"] in ("conversation", "thought", "observation")]
+    semantic = [m for m in memories_with_meta if m["event_type"] in ("knowledge", "fact", "learning")]
+    working = memories_with_meta[:5]
+
+    # Calculate stats
+    total = engine.memory.get_count()
+    total_strength = sum(m["strength"] for m in memories_with_meta) / len(memories_with_meta) if memories_with_meta else 0
+
+    stats = {
+        "total": total,
+        "episodic_count": len(episodic),
+        "semantic_count": len(semantic),
+        "working_count": len(working),
+        "avg_strength": total_strength,
+        "last_consolidated": None,
+        "consolidation_pending": len(memories_with_meta) - 10 if len(memories_with_meta) > 10 else 0,
+    }
+
+    strength_distribution = {
+        "strong": len([m for m in memories_with_meta if m["strength"] > 0.7]),
+        "medium": len([m for m in memories_with_meta if 0.4 <= m["strength"] <= 0.7]),
+        "weak": len([m for m in memories_with_meta if m["strength"] < 0.4]),
+    }
+
+    if type == "episodic":
+        filtered_memories = episodic
+    elif type == "semantic":
+        filtered_memories = semantic
+    elif type == "working":
+        filtered_memories = working
+    else:
+        filtered_memories = memories_with_meta
+
+    return {
+        "code": 0,
+        "data": {
+            "memories": {
+                "episodic": episodic,
+                "semantic": semantic,
+                "working": working,
+                "all": memories_with_meta,
+            },
+            "stats": stats,
+            "strength_distribution": strength_distribution,
+            "total_count": len(filtered_memories),
+        }
+    }
+
+
+# ============== 日志接口 ==============
+
+@app.get("/api/logs")
+async def get_logs(
+    log_type: str = "all",
+    level: Optional[str] = None,
+    limit: int = 100,
+):
+    """获取日志列表"""
+    logger = get_event_logger()
+    logs = logger.get_logs(log_type=log_type, level=level, limit=limit)
+    stats = logger.get_stats()
+
+    return {
+        "code": 0,
+        "data": {
+            "logs": logs,
+            "stats": stats,
+            "type": log_type,
+        }
+    }
+
+
+@app.get("/api/logs/stats")
+async def get_log_stats():
+    """获取日志统计"""
+    logger = get_event_logger()
+    return {
+        "code": 0,
+        "data": logger.get_stats()
+    }
+
+
+@app.delete("/api/logs")
+async def clear_logs(log_type: Optional[str] = None):
+    """清空日志"""
+    logger = get_event_logger()
+    logger.clear(log_type)
+    return {
+        "code": 0,
+        "data": {"message": f"已清空 {log_type or '所有'} 日志"}
+    }
+
+@app.get("/api/history/sessions")
+async def get_history_sessions(
+    user_id: str = "default",
+    folder: Optional[str] = None,
+    archived: bool = False,
+    pinned: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """获取会话历史列表 - 增强版，支持文件夹/收藏/归档过滤"""
+    from engine.persistence import get_message_store
+
+    msg_store = get_message_store()
+    sessions = []
+
+    if msg_store:
+        try:
+            sessions = await msg_store.get_user_sessions(user_id)
+        except Exception as e:
+            print(f"Failed to get sessions: {e}")
+
+    # Also return mock data if no DB
+    if not sessions:
+        sessions = [
+            {
+                "id": 1,
+                "user_id": user_id,
+                "title": "关于人工智能的讨论",
+                "preview": "讨论了AI的发展历史和未来趋势...",
+                "created_at": "2026-05-01T10:00:00",
+                "updated_at": "2026-05-01T10:30:00",
+                "message_count": 12,
+                "tags": ["技术", "AI"],
+                "pinned": False,
+                "archived": False,
+                "folder": None,
+            },
+            {
+                "id": 2,
+                "user_id": user_id,
+                "title": "日常闲聊",
+                "preview": "聊了今天天气和心情...",
+                "created_at": "2026-05-02T15:00:00",
+                "updated_at": "2026-05-02T15:20:00",
+                "message_count": 8,
+                "tags": ["日常"],
+                "pinned": True,
+                "archived": False,
+                "folder": None,
+            },
+            {
+                "id": 3,
+                "user_id": user_id,
+                "title": "学习 Rust 编程",
+                "preview": "深入探讨了Rust的所有权系统...",
+                "created_at": "2026-05-03T09:00:00",
+                "updated_at": "2026-05-03T10:00:00",
+                "message_count": 25,
+                "tags": ["学习", "Rust"],
+                "pinned": False,
+                "archived": False,
+                "folder": "技术讨论",
+            },
+            {
+                "id": 4,
+                "user_id": user_id,
+                "title": "项目规划讨论",
+                "preview": "讨论了AKIHO项目的未来发展方向...",
+                "created_at": "2026-05-04T14:00:00",
+                "updated_at": "2026-05-04T15:30:00",
+                "message_count": 35,
+                "tags": ["项目", "规划"],
+                "pinned": False,
+                "archived": True,
+                "folder": "技术讨论",
+            },
+        ]
+
+    # Apply filters
+    filtered_sessions = sessions
+    if folder:
+        filtered_sessions = [s for s in filtered_sessions if s.get("folder") == folder]
+    if archived:
+        filtered_sessions = [s for s in filtered_sessions if s.get("archived", False)]
+    if pinned:
+        filtered_sessions = [s for s in filtered_sessions if s.get("pinned", False)]
+
+    # Sort: pinned first, then by updated_at
+    filtered_sessions.sort(key=lambda s: (not s.get("pinned", False), s.get("updated_at", "")), reverse=True)
+
+    # Pagination
+    total = len(filtered_sessions)
+    paginated = filtered_sessions[offset:offset + limit]
+
+    return {
+        "code": 0,
+        "data": {
+            "sessions": paginated,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    }
+
+
+@app.get("/api/history/sessions/{session_id}")
+async def get_session_detail(session_id: int):
+    """获取会话详情"""
+    from engine.persistence import get_message_store
+
+    msg_store = get_message_store()
+
+    if msg_store:
+        try:
+            messages = await msg_store.get_session_messages(session_id)
+            return {"code": 0, "data": {"messages": messages}}
+        except Exception as e:
+            print(f"Failed to get messages: {e}")
 
     # Fallback mock data
     return {
@@ -1336,65 +2240,242 @@ async def get_session_detail(session_id: int):
     }
 
 
-@app.get("/api/history/folders")
-async def get_folders():
-    """获取文件夹列表"""
+@app.post("/api/history/sessions/{session_id}/pin")
+async def pin_session(session_id: int, pinned: bool = True):
+    """切换会话收藏状态"""
+    # TODO: 实现持久化
     return {
         "code": 0,
         "data": {
-            "folders": [
-                {"id": 1, "name": "技术讨论", "count": 5},
-                {"id": 2, "name": "日常闲聊", "count": 12},
-                {"id": 3, "name": "学习笔记", "count": 3},
-            ]
+            "session_id": session_id,
+            "pinned": pinned,
+            "message": f"会话 {'已收藏' if pinned else '已取消收藏'}"
         }
     }
 
 
-# ============== 记忆接口 ==============
-
-@app.get("/api/memories")
-async def get_memories(type: Optional[str] = None):
-    """获取记忆列表"""
-    engine = get_engine()
-
-    # Get recent memories from engine
-    recent = engine.memory.get_recent(hours=720, limit=50)
-
-    # Categorize by type (simplified - all are episodic for now)
-    episodic = [m for m in recent if m.get("event_type") == "conversation"]
-    semantic = [m for m in recent if m.get("event_type") == "knowledge"]
-    working = engine.memory.get_working_memory()
-
-    # Stats
-    stats = {
-        "total": engine.memory.get_count(),
-        "episodic": len(episodic),
-        "semantic": len(semantic),
-        "working": len(working),
-        "lastConsolidated": "2026-05-06T00:00:00"
+@app.post("/api/history/sessions/{session_id}/archive")
+async def archive_session(session_id: int, archived: bool = True):
+    """切换会话归档状态"""
+    # TODO: 实现持久化
+    return {
+        "code": 0,
+        "data": {
+            "session_id": session_id,
+            "archived": archived,
+            "message": f"会话 {'已归档' if archived else '已取消归档'}"
+        }
     }
 
-    if type == "episodic":
-        memories = episodic
-    elif type == "semantic":
-        memories = semantic
-    elif type == "working":
-        memories = working
+
+@app.delete("/api/history/sessions/{session_id}")
+async def delete_session(session_id: int):
+    """删除会话"""
+    # TODO: 实现持久化
+    return {
+        "code": 0,
+        "data": {
+            "session_id": session_id,
+            "message": "会话已删除"
+        }
+    }
+
+class PlatformSendRequest(BaseModel):
+    """平台发送消息请求"""
+    chat_id: str = Field(..., description="会话 ID")
+    content: str = Field(..., description="消息内容")
+    reply_to_message_id: Optional[str] = Field(None, description="回复的消息 ID")
+
+
+@app.get("/api/platforms")
+async def get_platforms():
+    """获取所有平台状态"""
+    global platform_manager
+    if not platform_manager:
+        return {"code": 1, "detail": "平台管理器未初始化"}
+
+    return {"code": 0, "data": platform_manager.get_status()}
+
+
+@app.get("/api/platforms/{platform}")
+async def get_platform_status(platform: str):
+    """获取特定平台状态"""
+    global platform_manager
+    if not platform_manager:
+        return {"code": 1, "detail": "平台管理器未初始化"}
+
+    adapter = platform_manager.get_platform(platform)
+    if not adapter:
+        return {"code": 1, "detail": f"平台 {platform} 未找到"}
+
+    return {"code": 0, "data": adapter.get_status()}
+
+
+@app.post("/api/platforms/{platform}/send")
+async def send_platform_message(platform: str, request: PlatformSendRequest):
+    """通过平台发送消息"""
+    global platform_manager
+    if not platform_manager:
+        return {"code": 1, "detail": "平台管理器未初始化"}
+
+    success = await platform_manager.send_message(
+        platform=platform,
+        chat_id=request.chat_id,
+        content=request.content,
+        reply_to_message_id=request.reply_to_message_id,
+    )
+
+    if success:
+        return {"code": 0, "success": True, "message": "消息发送成功"}
     else:
-        memories = episodic + semantic + working
+        return {"code": 1, "success": False, "detail": "消息发送失败"}
 
-    return {
-        "code": 0,
-        "data": {
-            "memories": {
-                "episodic": episodic[:20],
-                "semantic": semantic[:20],
-                "working": working[:10]
-            },
-            "stats": stats
-        }
-    }
+
+@app.post("/api/platforms/{platform}/start")
+async def start_platform(platform: str):
+    """启动指定平台"""
+    global platform_manager
+    if not platform_manager:
+        return {"code": 1, "detail": "平台管理器未初始化"}
+
+    success = await platform_manager.start_platform(platform)
+    if success:
+        return {"code": 0, "success": True, "message": f"平台 {platform} 启动成功"}
+    else:
+        return {"code": 1, "detail": f"平台 {platform} 启动失败"}
+
+
+@app.post("/api/platforms/{platform}/stop")
+async def stop_platform(platform: str):
+    """停止指定平台"""
+    global platform_manager
+    if not platform_manager:
+        return {"code": 1, "detail": "平台管理器未初始化"}
+
+    success = await platform_manager.stop_platform(platform)
+    if success:
+        return {"code": 0, "success": True, "message": f"平台 {platform} 已停止"}
+    else:
+        return {"code": 1, "detail": f"平台 {platform} 停止失败"}
+
+
+@app.post("/api/platforms/{platform}/restart")
+async def restart_platform(platform: str):
+    """重启指定平台"""
+    global platform_manager
+    if not platform_manager:
+        return {"code": 1, "detail": "平台管理器未初始化"}
+
+    # 停止平台
+    await platform_manager.stop_platform(platform)
+    # 启动平台
+    success = await platform_manager.start_platform(platform)
+
+    if success:
+        return {"code": 0, "success": True, "message": f"平台 {platform} 重启成功"}
+    else:
+        return {"code": 1, "detail": f"平台 {platform} 重启失败"}
+
+
+# ============== 平台 Webhook 端点 ==============
+
+@app.post("/api/platforms/telegram/webhook")
+async def telegram_webhook(request: Request):
+    """
+    Telegram Webhook 端点。
+
+    接收 Telegram 传来的更新。
+    """
+    global platform_manager
+
+    try:
+        update = await request.json()
+        adapter = platform_manager.get_platform("telegram")
+        if adapter and hasattr(adapter, "process_update"):
+            await adapter.process_update(update)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/platforms/wechat/webhook")
+async def wechat_webhook(request: Request):
+    """
+    微信 Webhook 端点。
+
+    接收来自 Clawbot 转发的微信消息。
+    """
+    global platform_manager
+
+    try:
+        payload = await request.json()
+        adapter = platform_manager.get_platform("wechat")
+        if adapter and hasattr(adapter, "handle_webhook"):
+            await adapter.handle_webhook(payload)
+        return {"code": 0, "message": "ok"}
+    except Exception as e:
+        return {"code": 1, "error": str(e)}
+
+
+# ============== 社交接口 ==============
+
+@app.get("/api/social/account")
+async def get_social_account():
+    """获取社交账号信息"""
+    return {"code": 0, "data": {"username": "aki_ai", "platform": "twitter", "connected": True}}
+
+
+@app.get("/api/social/stats")
+async def get_social_stats():
+    """获取社交统计"""
+    return {"code": 0, "data": {"viewed": 0, "interacted": 0, "mood": "neutral"}}
+
+
+@app.get("/api/social/timeline")
+async def get_social_timeline():
+    """获取社交时间线"""
+    return {"code": 0, "data": []}
+
+
+@app.post("/api/social/timeline/refresh")
+async def refresh_social_timeline():
+    """刷新时间线"""
+    return {"code": 0, "data": []}
+
+
+@app.get("/api/social/logs")
+async def get_social_logs():
+    """获取社交日志"""
+    return {"code": 0, "data": []}
+
+
+@app.get("/api/social/impacts")
+async def get_social_impacts():
+    """获取社交影响"""
+    return {"code": 0, "data": []}
+
+
+@app.post("/api/social/tweet")
+async def post_tweet(request: dict):
+    """发布推文"""
+    content = request.get("content", "")
+    return {"code": 0, "data": {"id": "new_tweet", "content": content, "created_at": "now"}}
+
+
+@app.post("/api/social/like")
+async def like_tweet(request: dict):
+    """点赞推文"""
+    tweet_id = request.get("tweetId", "")
+    liked = request.get("liked", True)
+    return {"code": 0, "data": {"tweet_id": tweet_id, "liked": liked}}
+
+
+@app.post("/api/social/retweet")
+async def retweet(request: dict):
+    """转发推文"""
+    tweet_id = request.get("tweetId", "")
+    retweeted = request.get("retweeted", True)
+    return {"code": 0, "data": {"tweet_id": tweet_id, "retweeted": retweeted}}
 
 
 # ============== 错误处理 ==============

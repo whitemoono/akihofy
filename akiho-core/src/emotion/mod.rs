@@ -70,6 +70,10 @@ impl EmotionEngine {
         self.emotion_state
     }
 
+    pub fn set_pad(&mut self, pleasure: f32, arousal: f32, dominance: f32) {
+        self.current_state = PADState { pleasure, arousal, dominance };
+    }
+
     pub fn update(&mut self, delta_seconds: f32) {
         self.current_state = self.inertia.apply_decay(&self.current_state, delta_seconds);
         self.emotion_state = self.state_machine.classify(&self.current_state);
@@ -91,8 +95,8 @@ impl EmotionEngine {
         });
     }
 
-    pub fn history(&self) -> impl Iterator<Item = &EmotionSnapshot> {
-        self.history.iter().rev()
+    pub fn history(&self) -> impl Iterator<Item = &PADState> + '_ {
+        self.history.iter().map(|s| &s.state)
     }
 }
 

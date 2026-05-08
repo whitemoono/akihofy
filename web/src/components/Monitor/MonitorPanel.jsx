@@ -214,7 +214,12 @@ export function MonitorPanel({ onClose, onOpenSettings }) {
           try {
             const data = JSON.parse(event.data)
             if (data.type === 'state' || data.type === 'state_update') {
-              setState(data.data)
+              // 处理双层嵌套：{type, data: {code, data: {...}}}
+              let stateData = data.data
+              if (stateData?.data) {
+                stateData = stateData.data  // 解包双层嵌套
+              }
+              setState(stateData)
               setLastUpdate(new Date())
             }
           } catch (e) {

@@ -1,13 +1,13 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 
 const MOODS = {
-  happy: { icon: '(*^▽^*)', text: '开心', color: 'text-primary-500' },
-  sad: { icon: '(；へ：)', text: '难过', color: 'text-blue-400' },
-  angry: { icon: '(╬ Ò﹏Ó)', text: '生气', color: 'text-red-400' },
-  shy: { icon: '(⁄ ⁄•⁄ω⁄•⁄ ⁄)', text: '害羞', color: 'text-pink-400' },
-  sleepy: { icon: '(－ω－) zzZ', text: '困了', color: 'text-purple-400' },
-  excited: { icon: '(ﾉ◕ヮ◕)ﾉ*:・ﾟ✧', text: '兴奋', color: 'text-mint' },
-  neutral: { icon: '(・∀・)', text: '一般', color: 'text-gray-500' }
+  happy: { icon: '(*^▽^*)', text: '开心', color: 'text-primary-500', name: '秋穗 Akiho', title: '镜野的守望者' },
+  sad: { icon: '(；へ：)', text: '难过', color: 'text-blue-400', name: '秋穗 Akiho', title: '镜野的守望者' },
+  angry: { icon: '(╬ Ò﹏Ó)', text: '生气', color: 'text-red-400', name: '秋穗 Akiho', title: '镜野的守望者' },
+  shy: { icon: '(⁄ ⁄•⁄ω⁄•⁄ ⁄)', text: '害羞', color: 'text-pink-400', name: '秋穗 Akiho', title: '镜野的守望者' },
+  sleepy: { icon: '(－ω－) zzZ', text: '困了', color: 'text-purple-400', name: '秋穗 Akiho', title: '镜野的守望者' },
+  excited: { icon: '(ﾉ◕ヮ◕)ﾉ*:・ﾟ✧', text: '兴奋', color: 'text-mint', name: '秋穗 Akiho', title: '镜野的守望者' },
+  neutral: { icon: '(・∀・)', text: '一般', color: 'text-gray-500', name: '秋穗 Akiho', title: '镜野的守望者' }
 }
 
 /**
@@ -39,7 +39,7 @@ function padToMood(pleasure, arousal, dominance) {
   return 'neutral'
 }
 
-export function useCharacter() {
+export function useCharacter(onAutonomousMessage) {
   const [mood, setMood] = useState('happy')
   const [energy, setEnergy] = useState(85)
   const [isSpeaking, setIsSpeaking] = useState(false)
@@ -53,8 +53,20 @@ export function useCharacter() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
     const wsUrl = `${protocol}//${host}/ws`
+    let reconnectTimer = null
 
     const connect = () => {
+      // 清理旧连接
+      if (wsRef.current) {
+        wsRef.current.onclose = null  // 防止 onclose 递归
+        wsRef.current.onerror = null
+        if (wsRef.current.readyState === WebSocket.CONNECTING ||
+            wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.close()
+        }
+        wsRef.current = null
+      }
+
       try {
         wsRef.current = new WebSocket(wsUrl)
 
@@ -64,8 +76,13 @@ export function useCharacter() {
 
         wsRef.current.onclose = () => {
           setWsConnected(false)
-          // 3秒后重连
-          reconnectTimeoutRef.current = setTimeout(connect, 3000)
+          // 清理定时器，防止重复连接
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer)
+            reconnectTimer = null
+          }
+          // 5秒后重连（增加延迟避免频繁重连）
+          reconnectTimer = setTimeout(connect, 5000)
         }
 
         wsRef.current.onerror = () => {
@@ -75,8 +92,21 @@ export function useCharacter() {
         wsRef.current.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data)
+
+            // 检查是否是主动发言事件
+            if (data.type === 'autonomous_message') {
+              if (onAutonomousMessage) {
+                onAutonomousMessage(data)
+              }
+              return
+            }
+
             // 处理两种格式：直接数据或包装格式
-            const state = data.data || data
+            // 后端返回 {type, data: {code, data: {...}}} 或 {type, data: {...}}
+            let state = data.data
+            if (state?.data) {
+              state = state.data  // 解包双层嵌套
+            }
 
             if (state.emotion) {
               // 从后端同步 PAD 值
@@ -97,19 +127,30 @@ export function useCharacter() {
         }
       } catch (err) {
         console.error('WebSocket connection failed:', err)
-        reconnectTimeoutRef.current = setTimeout(connect, 3000)
+        // 使用 local 定时器
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(connect, 5000)
+        }
       }
     }
 
     connect()
 
     return () => {
+      // 清理所有定时器和连接
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
       clearTimeout(reconnectTimeoutRef.current)
       if (wsRef.current) {
+        wsRef.current.onclose = null
+        wsRef.current.onerror = null
         wsRef.current.close()
+        wsRef.current = null
       }
     }
-  }, [])
+  }, [onAutonomousMessage])
 
   const updateMood = useCallback((newMood) => {
     // 允许手动覆盖，但在有后端数据时会自动同步

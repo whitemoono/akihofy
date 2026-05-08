@@ -10,12 +10,14 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: process.env.VITE_API_BASE || 'http://localhost:8000',
+        target: 'http://localhost:8000',
         changeOrigin: true,
+        secure: false,
       },
       '/ws': {
-        target: process.env.VITE_WS_BASE || 'ws://localhost:8000',
+        target: 'ws://localhost:8000',
         ws: true,
+        secure: false,
       },
       '/tts': {
         target: process.env.VITE_TTS_BASE || 'http://localhost:8001',

@@ -8,6 +8,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: akiho-app
+    user: "${CURRENT_UID:-1000}:${CURRENT_GID:-1000}"
     ports:
       - "8000:8000"    # FastAPI
     environment:
@@ -34,6 +35,10 @@ services:
       - akiho-data:/app/data
       # Mount config file (read-write for settings persistence)
       - ./config.json:/app/config.json
+      # Mount source code for live development (overrides built-in code)
+      - ./engine:/app/engine:ro
+      - ./config.py:/app/config.py:ro
+      - ./api_server.py:/app/api_server.py:ro
       # Mount web source for development
       - ./web:/app/web:ro
     depends_on:

@@ -10,7 +10,7 @@ import { BackgroundParticles } from '../components/Background/BackgroundParticle
 import { useChat } from '../hooks/useChat'
 import { useCharacter } from '../hooks/useCharacter'
 import { useTTS } from '../hooks/useTTS'
-import { useLive2DSettings } from '../components/Character/SettingsPanel'
+import { useLive2DSettingsShared as useLive2DSettings } from '../components/Character/SettingsPanel'
 import { MonitorPanel } from '../components/Monitor/MonitorPanel'
 import { AnimatePresence, motion } from 'framer-motion'
 import gsap from 'gsap'
@@ -33,7 +33,21 @@ export function ChatPage() {
   const messagesEndRef = useRef(null)
   const { settings: live2dSettings, updateSetting: updateLive2DSetting } = useLive2DSettings()
   const { messages, isTyping, isStreaming, sendMessage, addMessage, clearMessages, startNewSession, getSessionList, switchSession, getCurrentSession } = useChat()
-  const { mood, isSpeaking, updateMood, startSpeaking, stopSpeaking, getMoodInfo } = useCharacter()
+
+  // 处理主动发言
+  const handleAutonomousMessage = useCallback((event) => {
+    console.log('收到主动发言:', event)
+    // 将主动发言添加到消息列表
+    addMessage({
+      role: 'assistant',
+      content: event.content,
+      isSpontaneous: true,
+      reasoning: event.reasoning,
+      timestamp: event.timestamp
+    })
+  }, [addMessage])
+
+  const { mood, isSpeaking, updateMood, startSpeaking, stopSpeaking, getMoodInfo } = useCharacter(handleAutonomousMessage)
   const { speak, isPlaying } = useTTS()
   const [sessions, setSessions] = useState([])
 
@@ -334,14 +348,29 @@ export function ChatPage() {
             {/* 消息列表 */}
             {messages.map((message, index) => {
               const isUser = message.role === 'user'
+              const isSpontaneous = message.isSpontaneous
+              const displayContent = message.content ?? ''
               return (
                 <div key={message.id || index} className={`flex gap-2 max-w-[88%] ${isUser ? 'self-end flex-row-reverse msg-user' : 'msg-ai'}`}>
-                  <div className={`backdrop-blur-md p-3 px-4 rounded-2xl text-[13px] leading-relaxed ${
+                  {isSpontaneous && (
+                    <div className="absolute -top-6 left-2 px-2 py-0.5 bg-gradient-to-r from-amber-400 to-orange-400 text-white text-[10px] rounded-full shadow-sm flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" />
+                      主动发言
+                    </div>
+                  )}
+                  <div className={`relative backdrop-blur-md p-3 px-4 rounded-2xl text-[13px] leading-relaxed ${
                     isUser
                       ? 'bg-teal-500/90 text-white rounded-tr-sm shadow-[0_4px_15px_rgba(45,164,168,0.2)] font-light'
-                      : 'bg-white/80 border border-white rounded-tl-sm shadow-[0_2px_10px_rgba(0,0,0,0.02)] text-slate-600'
+                      : isSpontaneous
+                        ? 'bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-100 rounded-tl-sm shadow-[0_2px_10px_rgba(251,191,36,0.1)] text-slate-600'
+                        : 'bg-white/80 border border-white rounded-tl-sm shadow-[0_2px_10px_rgba(0,0,0,0.02)] text-slate-600'
                   }`}>
-                    {message.content}
+                    {isSpontaneous && message.reasoning && (
+                      <div className="text-[10px] text-amber-500 mb-1 italic">
+                        💭 {message.reasoning}
+                      </div>
+                    )}
+                    {displayContent || '...'}
                   </div>
                 </div>
               )

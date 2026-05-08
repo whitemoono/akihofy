@@ -93,6 +93,15 @@ impl ResourcePools {
             .map(|(t, _)| *t)
             .unwrap_or(PoolType::Cognitive)
     }
+
+    pub fn set_energy(&mut self, energy: f32) {
+        let delta = energy - self.overall_energy();
+        let pool_delta = delta / 4.0;
+        self.cognitive.current = (self.cognitive.current + pool_delta).clamp(0.0, 1.0);
+        self.social.current = (self.social.current + pool_delta).clamp(0.0, 1.0);
+        self.emotional.current = (self.emotional.current + pool_delta).clamp(0.0, 1.0);
+        self.creative.current = (self.creative.current + pool_delta).clamp(0.0, 1.0);
+    }
 }
 
 impl Default for ResourcePools {

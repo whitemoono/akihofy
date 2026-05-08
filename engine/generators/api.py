@@ -5,8 +5,10 @@ API 生成器 - 使用云服务（DeepSeek、硅基流动等）
 """
 
 import os
+import json
 import httpx
 from typing import Optional, Literal
+from pathlib import Path
 from .base import BaseGenerator, GenerationContext, GenerationResult, GeneratorType
 
 
@@ -54,7 +56,7 @@ class APIGenerator(BaseGenerator):
 
         Args:
             provider: 提供商名称 (deepseek/siliconflow/openai/anthropic)
-            api_key: API 密钥（如果为 None，从环境变量读取）
+            api_key: API 密钥（如果为 None，优先从 config.json 读取，否则从环境变量）
             base_url: 自定义 API 地址
             model: 模型名称
             timeout: 请求超时时间
@@ -62,17 +64,37 @@ class APIGenerator(BaseGenerator):
         self.provider = provider.lower()
         provider_config = self.PROVIDERS.get(self.provider, self.PROVIDERS["deepseek"])
 
-        self.base_url = base_url or provider_config["base_url"]
-        self.model = model or provider_config["model"]
+        # 优先从 config.json 读取配置
+        config = self._load_config_json()
+        llm_config = config.get("llm", {})
+        presets = llm_config.get("presets", [])
+        active_preset_id = llm_config.get("active_preset_id")
+        active_preset = None
+        if active_preset_id:
+            active_preset = next((p for p in presets if p.get("id") == active_preset_id), None)
+        elif presets:
+            active_preset = presets[0]
 
-        # 获取 API Key
-        if api_key:
-            self.api_key = api_key
+        # 使用 config.json 中的配置（如果存在）
+        if active_preset:
+            self.base_url = base_url or active_preset.get("base_url") or provider_config["base_url"]
+            self.model = model or active_preset.get("model_id") or active_preset.get("model") or provider_config["model"]
+            self.api_key = api_key or active_preset.get("api_key") or os.getenv(provider_config["env_key"], "")
         else:
-            self.api_key = os.getenv(provider_config["env_key"], "")
+            self.base_url = base_url or provider_config["base_url"]
+            self.model = model or provider_config["model"]
+            self.api_key = api_key or os.getenv(provider_config["env_key"], "")
 
         self.timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
+
+    def _load_config_json(self) -> dict:
+        """从 config.json 加载配置"""
+        config_path = Path(__file__).parent.parent.parent / "config.json"
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
 
     async def _get_client(self) -> httpx.AsyncClient:
         """获取或创建 HTTP 客户端"""

@@ -97,6 +97,10 @@ pub mod python {
                 self.0.process_stimulus(&EmotionStimulus::SessionDuration { fatigue: (fatigue - 0.7) * 0.5 });
             }
         }
+
+        pub fn set_pad(&mut self, pleasure: f32, arousal: f32, dominance: f32) {
+            self.0.set_pad(pleasure, arousal, dominance);
+        }
     }
 
     // ═══ 生理引擎 PyO3 绑定 ═══
@@ -157,6 +161,10 @@ pub mod python {
                 dict.set_item("expression_hints", le.expression_hints.clone())?;
                 Ok(dict.into())
             })
+        }
+
+        pub fn set_energy(&mut self, energy: f32) {
+            self.0.pools.set_energy(energy);
         }
     }
 
@@ -269,6 +277,64 @@ pub mod python {
         pub fn refresh_attention(&mut self) {
             self.0.attention.refresh();
         }
+
+        /// 获取元认知状态
+        pub fn get_metacognition(&self) -> PyResult<Py<PyAny>> {
+            Python::with_gil(|py| {
+                let dict = pyo3::types::PyDict::new_bound(py);
+                let m = &self.0.metacognition;
+                dict.set_item("reasoning_confidence", m.reasoning_confidence)?;
+                dict.set_item("known_blindspots", m.known_blindspots.clone())?;
+                let strategy_name = match m.thinking_strategy {
+                    cognition::ThinkingStrategy::Cautious => "谨慎思考",
+                    cognition::ThinkingStrategy::Quick => "快速思考",
+                    cognition::ThinkingStrategy::Systematic => "系统思考",
+                    cognition::ThinkingStrategy::Creative => "创造性思考",
+                };
+                dict.set_item("thinking_strategy", strategy_name)?;
+                Ok(dict.into())
+            })
+        }
+
+        /// 获取认知偏差状态
+        pub fn get_biases(&self) -> PyResult<Py<PyAny>> {
+            Python::with_gil(|py| {
+                let dict = pyo3::types::PyDict::new_bound(py);
+                let b = &self.0.biases;
+                dict.set_item("confirmation_bias", b.confirmation_bias)?;
+                dict.set_item("anchoring", b.anchoring)?;
+                dict.set_item("recency_bias", b.recency_bias)?;
+                dict.set_item("optimism_bias", b.optimism_bias)?;
+                Ok(dict.into())
+            })
+        }
+
+        /// 获取注意力状态
+        pub fn get_attention_state(&self) -> PyResult<Py<PyAny>> {
+            Python::with_gil(|py| {
+                let dict = pyo3::types::PyDict::new_bound(py);
+                let a = &self.0.attention;
+                dict.set_item("current_focus", a.current_focus.clone())?;
+                dict.set_item("attention_span", a.attention_span)?;
+                dict.set_item("sustained_attention", a.sustained_attention)?;
+                dict.set_item("distractibility", a.distractibility)?;
+                Ok(dict.into())
+            })
+        }
+
+        /// 获取推理状态
+        pub fn get_reasoning_state(&self) -> PyResult<Py<PyAny>> {
+            Python::with_gil(|py| {
+                let dict = pyo3::types::PyDict::new_bound(py);
+                let r = &self.0.reasoning;
+                let active_names: Vec<String> = r.active_reasoning.iter()
+                    .map(|t| t.name().to_string())
+                    .collect();
+                dict.set_item("active_reasoning", active_names)?;
+                dict.set_item("reasoning_quality", r.reasoning_quality)?;
+                Ok(dict.into())
+            })
+        }
     }
 
     // ═══ 关系引擎 PyO3 绑定 ═══
@@ -304,6 +370,23 @@ pub mod python {
             self.0.get(user_id)
                 .map(|r| r.trust.composite_trust())
                 .unwrap_or(0.0)
+        }
+
+        pub fn set_intimacy(&mut self, user_id: &str, intimacy: f32) {
+            self.0.set_intimacy(user_id, intimacy);
+        }
+
+        pub fn set_stage(&mut self, user_id: &str, stage_name: &str) {
+            let stage = match stage_name {
+                "stranger" | "陌生人" => relationship::RelationshipStage::Stranger,
+                "acquaintance" | "认识的人" => relationship::RelationshipStage::Acquaintance,
+                "familiar" | "熟悉的" => relationship::RelationshipStage::Familiar,
+                "friend" | "朋友" => relationship::RelationshipStage::Friend,
+                "close" | "密友" => relationship::RelationshipStage::CloseFriend,
+                "intimate" | "亲密" => relationship::RelationshipStage::Intimate,
+                _ => return,
+            };
+            self.0.set_stage(user_id, stage);
         }
     }
 
@@ -469,6 +552,22 @@ pub mod python {
             } else {
                 false
             }
+        }
+
+        pub fn get_active(&self) -> PyResult<Py<PyAny>> {
+            let active = self.0.get_active();
+            Python::with_gil(|py| {
+                let list = pyo3::types::PyList::empty_bound(py);
+                for a in active {
+                    let dict = pyo3::types::PyDict::new_bound(py);
+                    dict.set_item("behavior_id", &a.behavior_id)?;
+                    dict.set_item("started_at", a.started_at)?;
+                    dict.set_item("progress", a.progress)?;
+                    dict.set_item("can_interrupt", a.can_interrupt)?;
+                    list.append(dict)?;
+                }
+                Ok(list.into())
+            })
         }
     }
 

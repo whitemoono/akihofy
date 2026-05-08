@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, createContext, useContext } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Settings as SettingsIcon, Sparkles, Image, MessageSquare, MousePointer } from 'lucide-react'
 
@@ -35,11 +35,16 @@ const defaultSettings = {
     particleSize: 3.2,
     repelForce: 80,
     offsetX: 0,
-    offsetY: 0
+    offsetY: 0,
+    scale: 1
   }
 }
 
-export function useLive2DSettings() {
+// 创建 Context
+const Live2DSettingsContext = createContext(null)
+
+// Provider 组件
+export function Live2DSettingsProvider({ children }) {
   const [settings, setSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('live2d-settings')
@@ -70,7 +75,25 @@ export function useLive2DSettings() {
 
   const resetSettings = () => setSettings(defaultSettings)
 
-  return { settings, updateSetting, resetSettings }
+  return (
+    <Live2DSettingsContext.Provider value={{ settings, updateSetting, resetSettings }}>
+      {children}
+    </Live2DSettingsContext.Provider>
+  )
+}
+
+// 共享的 hook - 用于需要共享状态的组件
+export function useLive2DSettingsShared() {
+  const context = useContext(Live2DSettingsContext)
+  if (!context) {
+    throw new Error('useLive2DSettingsShared must be used within Live2DSettingsProvider')
+  }
+  return context
+}
+
+// 原来的 hook - 使用共享状态
+export function useLive2DSettings() {
+  return useLive2DSettingsShared()
 }
 
 export function SettingsPanel({ settings, updateSetting, onClose }) {

@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useLive2DSettings } from '../components/Character/SettingsPanel'
+import { useLive2DSettingsShared } from '../components/Character/SettingsPanel'
 import { ParticleImageUploader } from '../components/Character/ParticleViewer'
 import {
   Settings, Palette, MessageCircle, Mic, Globe, Sparkles, RotateCcw,
@@ -51,7 +51,8 @@ const LLM_PROVIDERS = [
 
 // 向量提供商配置
 const EMBEDDING_PROVIDERS = [
-  { id: 'dashscope', name: '阿里云百炼', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: ['text-embedding-v4', 'tongyi-embedding-vision-plus-2026-03-06'] },
+  { id: 'dashscope', name: '阿里云百炼', baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding', models: ['text-embedding-v3', 'text-embedding-v4'] },
+  { id: 'doubao', name: '豆包 (ByteDance)', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3/embeddings', models: ['doubao-embedding-vision', 'doubao-embedding', 'doubao-embedding-large'] },
   { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', models: ['text-embedding-3-small', 'text-embedding-3-large'] },
   { id: 'siliconflow', name: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', models: ['BAAI/bge-large-zh-v1.5', 'netease-youdao/bce-embedding-base_v1'] },
   { id: 'zhipu', name: '智谱 AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', models: ['embedding-3', 'embedding-3-flash'] },
@@ -90,7 +91,7 @@ const SETTINGS_CATEGORIES = [
 ]
 
 export function SettingsPage() {
-  const { settings, updateSetting, resetSettings } = useLive2DSettings()
+  const { settings, updateSetting, resetSettings } = useLive2DSettingsShared()
   const [activeCategory, setActiveCategory] = useState('llm')
 
   // LLM 预设状态
@@ -299,50 +300,101 @@ export function SettingsPage() {
     }
 
     try {
-      const endpoint = type === 'llm' ? '/models' : '/embeddings'
-      const response = await fetch(`${preset.base_url}${endpoint}`, {
-        headers: { 'Authorization': `Bearer ${preset.api_key}` }
+      // 使用后端代理获取模型列表
+      const response = await fetch('/api/models/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          base_url: preset.base_url,
+          api_key: preset.api_key,
+          type: type
+        })
       })
 
       if (response.ok) {
-        const data = await response.json()
-        const models = data.data?.map(m => m.id) || []
+        const result = await response.json()
+        if (result.code === 0) {
+          const models = result.data?.models?.map(m => m.id) || []
+          const modelNames = [...new Set(models)] // 去重
 
-        if (models.length === 0) {
-          alert('未获取到模型列表')
-          return
-        }
-
-        if (type === 'llm') {
-          setLlmAvailableModels(models)
-          // 更新预设的模型列表和当前模型
-          updateLlmPreset(preset.id, { 
-            model_id: models[0],
-            available_models: models 
-          })
+          if (modelNames.length === 0) {
+            // 模型列表为空，提示用户使用预设模型
+            console.log('API returned empty model list, using default models')
+          } else {
+            if (type === 'llm') {
+              setLlmAvailableModels(modelNames)
+              updateLlmPreset(preset.id, {
+                model_id: preset.model_id || modelNames[0],
+                available_models: modelNames
+              })
+            } else {
+              setEmbAvailableModels(modelNames)
+              updateEmbPreset(preset.id, {
+                model_id: preset.model_id || modelNames[0],
+                available_models: modelNames
+              })
+            }
+            saveConfig(type)
+            if (type === 'llm') setIsLoadingModels(false)
+            else setIsLoadingEmbModels(false)
+            return
+          }
         } else {
-          setEmbAvailableModels(models)
-          updateEmbPreset(preset.id, { 
-            model_id: models[0],
-            available_models: models 
-          })
+          console.log('API returned error:', result.error)
         }
+      } else {
+        console.log('API request failed:', response.status)
+      }
+    } catch (error) {
+      console.log('API request error:', error.message)
+    }
 
-        // 自动保存
-        saveConfig(type)
-      } else {
-        const error = await response.text()
-        alert(`获取模型失败: ${response.status} ${error}`)
+    // 如果 API 获取失败或返回为空，使用默认模型列表
+    const DEFAULT_MODELS = {
+      'llm': {
+        'deepseek': ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
+        'siliconflow': ['Qwen/Qwen2.5-14B-Instruct', 'deepseek-ai/DeepSeek-V2.5'],
+        'openai': ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
+        'anthropic': ['claude-3-5-sonnet-20241022', 'claude-3-opus-20240229'],
+        'zhipu': ['glm-4', 'glm-4-flash', 'glm-4-plus'],
+        'dashscope': ['qwen-plus', 'qwen-turbo', 'qwen-long'],
+        'custom': [],
+      },
+      'embedding': {
+        'dashscope': ['text-embedding-v3', 'text-embedding-v4'],
+        'openai': ['text-embedding-3-small', 'text-embedding-3-large'],
+        'siliconflow': ['BAAI/bge-m3', 'BAAI/bge-large-zh-v1.5', 'netease-youdao/bce-embedding-base_v1'],
+        'zhipu': ['embedding-3', 'embedding-3-flash'],
+        'local': ['bge-m3', 'nomic-embed-text'],
+        'doubao': ['doubao-embedding', 'doubao-embedding-large', 'doubao-embedding-vision'],
+        'custom': [],
       }
-    } catch (e) {
-      console.error(`Failed to fetch ${type} models:`, e)
-      alert(`获取模型失败: ${e.message}`)
-    } finally {
-      if (type === 'llm') {
-        setIsLoadingModels(false)
-      } else {
-        setIsLoadingEmbModels(false)
+    }
+
+    const defaultModels = DEFAULT_MODELS[type]?.[preset.provider] || []
+
+    if (type === 'llm') {
+      setLlmAvailableModels(defaultModels)
+      if (defaultModels.length > 0) {
+        updateLlmPreset(preset.id, {
+          model_id: preset.model_id || defaultModels[0],
+          available_models: defaultModels
+        })
       }
+      setIsLoadingModels(false)
+    } else {
+      setEmbAvailableModels(defaultModels)
+      if (defaultModels.length > 0) {
+        updateEmbPreset(preset.id, {
+          model_id: preset.model_id || defaultModels[0],
+          available_models: defaultModels
+        })
+      }
+      setIsLoadingEmbModels(false)
+    }
+
+    if (defaultModels.length > 0) {
+      saveConfig(type)
     }
   }
 
@@ -428,6 +480,16 @@ export function SettingsPage() {
           port: serverPort,
           debug: debugMode
         }
+      }
+
+      // character 和 background 设置保存到 localStorage（客户端设置）
+      if (category === 'character' || category === 'background' || category === 'all') {
+        // 这两类设置直接通过 useLive2DSettings 保存到 localStorage
+        // 不需要调用服务器 API
+        setSaveStatus({ type: 'success', message: '保存成功！' })
+        setTimeout(() => setSaveStatus({ type: '', message: '' }), 3000)
+        setIsSaving(false)
+        return
       }
 
       const res = await fetch('/api/config', {
@@ -650,10 +712,212 @@ export function SettingsPage() {
                     <span className="px-3 py-1 bg-pink-100 text-pink-700 rounded-full text-xs font-medium">已加载</span>
                   </div>
 
+                  {/* 角色类型切换 */}
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-2">角色模型文件</label>
-                    <ParticleImageUploader />
+                    <label className="block text-sm font-medium text-slate-700 mb-2">角色类型</label>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => updateSetting('character.type', 'live2d')}
+                        className={`flex-1 py-2.5 px-3 rounded-xl text-sm font-medium transition-all ${
+                          settings.character?.type === 'live2d'
+                            ? 'bg-gradient-to-r from-teal-500 to-emerald-500 text-white shadow-lg'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        Live2D 模型
+                      </button>
+                      <button
+                        onClick={() => updateSetting('character.type', 'particle')}
+                        className={`flex-1 py-2.5 px-3 rounded-xl text-sm font-medium transition-all ${
+                          settings.character?.type === 'particle'
+                            ? 'bg-gradient-to-r from-teal-500 to-emerald-500 text-white shadow-lg'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        粒子效果
+                      </button>
+                    </div>
                   </div>
+
+                  {/* Live2D 设置 */}
+                  {settings.character?.type === 'live2d' && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">模型缩放</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min="0.3"
+                            max="3"
+                            step="0.1"
+                            value={settings.model?.scale ?? 1.0}
+                            onChange={e => updateSetting('model.scale', parseFloat(e.target.value))}
+                            className="flex-1 accent-teal-500"
+                          />
+                          <span className="text-sm text-slate-500 w-16 text-right">
+                            {Math.round((settings.model?.scale ?? 1.0) * 100)}%
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">水平偏移</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min="-200"
+                            max="200"
+                            step="10"
+                            value={settings.model?.offsetX ?? 0}
+                            onChange={e => updateSetting('model.offsetX', parseInt(e.target.value))}
+                            className="flex-1 accent-teal-500"
+                          />
+                          <span className="text-sm text-slate-500 w-16 text-right">
+                            {settings.model?.offsetX ?? 0}px
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">垂直偏移</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min="-200"
+                            max="200"
+                            step="10"
+                            value={settings.model?.offsetY ?? 0}
+                            onChange={e => updateSetting('model.offsetY', parseInt(e.target.value))}
+                            className="flex-1 accent-teal-500"
+                          />
+                          <span className="text-sm text-slate-500 w-16 text-right">
+                            {settings.model?.offsetY ?? 0}px
+                          </span>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* 粒子效果设置 */}
+                  {settings.character?.type === 'particle' && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">粒子图片</label>
+                        <ParticleImageUploader
+                          value={settings.character?.particleImage || ''}
+                          onChange={(base64) => updateSetting('character.particleImage', base64)}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">粒子间距</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min="1"
+                            max="10"
+                            step="0.5"
+                            value={settings.particle?.step ?? 3}
+                            onChange={e => updateSetting('particle.step', parseFloat(e.target.value))}
+                            className="flex-1 accent-teal-500"
+                          />
+                          <span className="text-sm text-slate-500 w-16 text-right">
+                            {settings.particle?.step ?? 3}px
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">粒子大小</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min="1"
+                            max="8"
+                            step="0.2"
+                            value={settings.particle?.particleSize ?? 3.2}
+                            onChange={e => updateSetting('particle.particleSize', parseFloat(e.target.value))}
+                            className="flex-1 accent-teal-500"
+                          />
+                          <span className="text-sm text-slate-500 w-16 text-right">
+                            {settings.particle?.particleSize ?? 3.2}px
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">排斥力</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min="0"
+                            max="200"
+                            step="10"
+                            value={settings.particle?.repelForce ?? 80}
+                            onChange={e => updateSetting('particle.repelForce', parseInt(e.target.value))}
+                            className="flex-1 accent-teal-500"
+                          />
+                          <span className="text-sm text-slate-500 w-16 text-right">
+                            {settings.particle?.repelForce ?? 80}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">水平偏移</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min="-300"
+                            max="300"
+                            step="10"
+                            value={settings.particle?.offsetX ?? 0}
+                            onChange={e => updateSetting('particle.offsetX', parseInt(e.target.value))}
+                            className="flex-1 accent-teal-500"
+                          />
+                          <span className="text-sm text-slate-500 w-16 text-right">
+                            {settings.particle?.offsetX ?? 0}px
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">垂直偏移</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min="-300"
+                            max="300"
+                            step="10"
+                            value={settings.particle?.offsetY ?? 0}
+                            onChange={e => updateSetting('particle.offsetY', parseInt(e.target.value))}
+                            className="flex-1 accent-teal-500"
+                          />
+                          <span className="text-sm text-slate-500 w-16 text-right">
+                            {settings.particle?.offsetY ?? 0}px
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">缩放</label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="3"
+                            step="0.1"
+                            value={settings.particle?.scale ?? 1}
+                            onChange={e => updateSetting('particle.scale', parseFloat(e.target.value))}
+                            className="flex-1 accent-teal-500"
+                          />
+                          <span className="text-sm text-slate-500 w-16 text-right">
+                            {Math.round((settings.particle?.scale ?? 1) * 100)}%
+                          </span>
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                   <SaveButton onClick={() => saveConfig('character')} isSaving={isSaving} />
                 </div>
@@ -664,38 +928,93 @@ export function SettingsPage() {
             {activeCategory === 'background' && (
               <SettingsPanel title="背景设置" icon={Palette} description="自定义聊天背景">
                 <div className="space-y-5">
-                  <SelectField
-                    label="背景类型"
-                    value={settings.backgroundType || 'gradient'}
-                    options={[
-                      { value: 'gradient', label: '渐变色' },
-                      { value: 'image', label: '图片' },
-                      { value: 'solid', label: '纯色' }
-                    ]}
-                    onChange={v => updateSetting('backgroundType', v)}
-                  />
+                  {/* 背景类型切换 */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">背景类型</label>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => updateSetting('background.type', 'color')}
+                        className={`flex-1 py-2 px-3 rounded-xl text-sm font-medium transition-all ${
+                          settings.background?.type === 'color'
+                            ? 'bg-gradient-to-r from-teal-500 to-emerald-500 text-white shadow-lg'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        纯色
+                      </button>
+                      <button
+                        onClick={() => updateSetting('background.type', 'image')}
+                        className={`flex-1 py-2 px-3 rounded-xl text-sm font-medium transition-all ${
+                          settings.background?.type === 'image'
+                            ? 'bg-gradient-to-r from-teal-500 to-emerald-500 text-white shadow-lg'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        图片
+                      </button>
+                      <button
+                        onClick={() => updateSetting('background.type', 'particle')}
+                        className={`flex-1 py-2 px-3 rounded-xl text-sm font-medium transition-all ${
+                          settings.background?.type === 'particle'
+                            ? 'bg-gradient-to-r from-teal-500 to-emerald-500 text-white shadow-lg'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        粒子
+                      </button>
+                    </div>
+                  </div>
 
-                  {settings.backgroundType === 'gradient' && (
-                    <>
-                      <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-2">起始颜色</label>
-                        <input
-                          type="color"
-                          value={settings.gradientStart || '#667eea'}
-                          onChange={e => updateSetting('gradientStart', e.target.value)}
-                          className="w-full h-12 rounded-xl cursor-pointer"
-                        />
+                  {/* 纯色设置 */}
+                  {settings.background?.type === 'color' && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">背景颜色</label>
+                      <input
+                        type="color"
+                        value={settings.background?.color || '#667eea'}
+                        onChange={e => updateSetting('background.color', e.target.value)}
+                        className="w-full h-12 rounded-xl cursor-pointer"
+                      />
+                    </div>
+                  )}
+
+                  {/* 图片设置 */}
+                  {settings.background?.type === 'image' && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">背景图片 URL</label>
+                      <input
+                        type="text"
+                        value={settings.background?.image || ''}
+                        onChange={e => updateSetting('background.image', e.target.value)}
+                        placeholder="https://example.com/image.jpg"
+                        className="w-full px-4 py-2.5 rounded-xl bg-white/50 border border-slate-200 text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/50 focus:border-teal-500"
+                      />
+                      <div className="mt-3">
+                        <label className="block text-sm font-medium text-slate-700 mb-2">图片适配方式</label>
+                        <div className="flex gap-2">
+                          {['cover', 'contain', 'center'].map(fit => (
+                            <button
+                              key={fit}
+                              onClick={() => updateSetting('background.fit', fit)}
+                              className={`flex-1 py-2 px-3 rounded-xl text-sm font-medium transition-all ${
+                                (settings.background?.fit || 'cover') === fit
+                                  ? 'bg-teal-500 text-white'
+                                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                              }`}
+                            >
+                              {fit === 'cover' ? '填充' : fit === 'contain' ? '适应' : '居中'}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                      <div>
-                        <label className="block text-sm font-medium text-slate-700 mb-2">结束颜色</label>
-                        <input
-                          type="color"
-                          value={settings.gradientEnd || '#764ba2'}
-                          onChange={e => updateSetting('gradientEnd', e.target.value)}
-                          className="w-full h-12 rounded-xl cursor-pointer"
-                        />
-                      </div>
-                    </>
+                    </div>
+                  )}
+
+                  {/* 粒子背景说明 */}
+                  {settings.background?.type === 'particle' && (
+                    <div className="text-center py-4 text-sm text-slate-500">
+                      粒子效果将平铺显示在背景上
+                    </div>
                   )}
 
                   <SaveButton onClick={() => saveConfig('background')} isSaving={isSaving} />

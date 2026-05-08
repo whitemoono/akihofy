@@ -49,8 +49,10 @@ class TestLLMManager:
         assert p1 is p2
 
     def test_get_provider_unknown(self, llm_manager):
-        with pytest.raises(ValueError):
-            llm_manager.get_provider("unknown_provider")
+        # 未知 provider 会使用默认配置而不是抛出异常
+        provider = llm_manager.get_provider("unknown_provider")
+        assert provider is not None
+        assert provider.description is not None
 
     def test_build_system_prompt(self, llm_manager, generation_context):
         prompt = llm_manager.build_system_prompt(generation_context)

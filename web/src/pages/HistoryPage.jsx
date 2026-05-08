@@ -108,9 +108,9 @@ export function HistoryPage() {
     if (searchQuery) {
       const query = searchQuery.toLowerCase()
       result = result.filter(s =>
-        s.title.toLowerCase().includes(query) ||
-        s.preview.toLowerCase().includes(query) ||
-        s.tags.some(t => t.toLowerCase().includes(query))
+        (s.title || '').toLowerCase().includes(query) ||
+        (s.preview || '').toLowerCase().includes(query) ||
+        (s.tags || []).some(t => t.toLowerCase().includes(query))
       )
     }
 
@@ -122,7 +122,10 @@ export function HistoryPage() {
     total: sessions.length,
     pinned: sessions.filter(s => s.pinned).length,
     archived: sessions.filter(s => s.archived).length,
-    thisWeek: sessions.filter(s => s.timeAgo === '刚刚' || s.timeAgo.includes('天前') && parseInt(s.timeAgo) <= 7).length,
+    thisWeek: sessions.filter(s => {
+      const timeAgo = s.timeAgo || ''
+      return timeAgo === '刚刚' || (timeAgo.includes('天前') && parseInt(timeAgo) <= 7)
+    }).length,
   }), [sessions])
 
   // 切换收藏
@@ -418,7 +421,7 @@ function SessionCard({ session, onClick, onTogglePin, onToggleArchive, onDelete 
 
       {/* 标签 */}
       <div className="flex items-center gap-2 mb-3 flex-wrap">
-        {session.tags.map(tag => (
+        {(session.tags || []).map(tag => (
           <span key={tag} className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded text-[10px]">
             {tag}
           </span>
@@ -508,7 +511,7 @@ function SessionDetailModal({ session, onClose, onTogglePin, onToggleArchive, se
 
           {/* 标签 */}
           <div className="flex items-center gap-2 mt-3">
-            {session.tags.map(tag => (
+            {(session.tags || []).map(tag => (
               <span key={tag} className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded text-xs">
                 {tag}
               </span>
@@ -595,7 +598,7 @@ function SessionDetailModal({ session, onClose, onTogglePin, onToggleArchive, se
               <div className="p-4 bg-amber-50 rounded-xl">
                 <h4 className="text-sm font-medium text-amber-700 mb-2">关键标签</h4>
                 <div className="flex flex-wrap gap-2">
-                  {session.tags.map(tag => (
+                  {(session.tags || []).map(tag => (
                     <span key={tag} className="px-2 py-1 bg-amber-100 text-amber-700 rounded text-xs">
                       {tag}
                     </span>

@@ -1,7 +1,7 @@
 """
 嵌入服务 - 支持多 Provider 的文本向量编码
 """
-from typing import List, Optional
+from typing import List, Optional, Any
 import os
 import httpx
 from config import get_settings
@@ -15,7 +15,8 @@ class EmbeddingService:
     - siliconflow (BAAI/bge-m3)
     - openai (text-embedding-3-small)
     - deepseek
-    - dashscope (阿里云百炼 tongyi-embedding-vision-plus-2026-03-06)
+    - dashscope (阿里云百炼 text-embedding-v3/v4)
+    - doubao (豆包 doubao-embedding-text-2412)
     """
 
     def __init__(
@@ -27,9 +28,20 @@ class EmbeddingService:
         settings = get_settings()
         emb = settings.get_embedding_config()
 
-        self.provider = provider or emb.get("provider", "dashscope")
+        # Resolve active preset (preset fields override top-level defaults)
+        active_id = emb.get("active_preset_id", "")
+        preset = {}
+        for p in emb.get("presets", []):
+            if p.get("id") == active_id:
+                preset = p
+                break
 
-        # Read API key from environment variable as fallback
+        def _resolve(key: str, default: Any = None) -> Any:
+            """Resolve value: explicit arg > active preset > top-level > default"""
+            return preset.get(key) or emb.get(key) or default
+
+        self.provider = provider or _resolve("provider", "dashscope")
+
         env_key_map = {
             "siliconflow": "SILICONFLOW_API_KEY",
             "openai": "OPENAI_API_KEY",
@@ -37,11 +49,19 @@ class EmbeddingService:
             "dashscope": "DASHSCOPE_API_KEY",
         }
         env_key = env_key_map.get(self.provider.lower(), "DASHSCOPE_API_KEY")
-        self.api_key = os.getenv(env_key) or emb.get("api_key", "")
+        self.api_key = os.getenv(env_key) or _resolve("api_key", "")
 
-        self.base_url = emb.get("base_url", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-        self.model = model or emb.get("model", "tongyi-embedding-vision-plus-2026-03-06")
-        self.dimension = dimension or emb.get("dimension", 1024)
+        base_urls = {
+            "siliconflow": "https://api.siliconflow.com/v1/embeddings",
+            "openai": "https://api.openai.com/v1/embeddings",
+            "deepseek": "https://api.deepseek.com/v1/embeddings",
+            "dashscope": "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding",
+            "doubao": "https://ark.cn-beijing.volces.com/api/v3/embeddings",
+        }
+        self.base_url = _resolve("base_url") or base_urls.get(self.provider, "")
+
+        self.model = model or _resolve("model_id") or _resolve("model") or emb.get("model", "text-embedding-v3")
+        self.dimension = dimension or _resolve("dimension", 1024)
 
     async def encode(self, texts: List[str]) -> List[List[float]]:
         """
@@ -65,6 +85,8 @@ class EmbeddingService:
             return await self._encode_deepseek(texts)
         elif provider == "dashscope":
             return await self._encode_dashscope(texts)
+        elif provider == "doubao":
+            return await self._encode_doubao(texts)
         else:
             raise ValueError(f"Unknown provider: {self.provider}")
 
@@ -139,27 +161,49 @@ class EmbeddingService:
     async def _encode_dashscope(self, texts: List[str]) -> List[List[float]]:
         """
         阿里云百炼 DashScope API
-        模型: tongyi-embedding-vision-plus-2026-03-06
+        模型: text-embedding-v3 / text-embedding-v4
         文档: https://help.aliyun.com/zh/dashscope/developer-reference/text-embedding-quick-start
         """
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"{self.base_url}/embeddings",
+                f"{self.base_url}",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json"
                 },
                 json={
                     "model": self.model,
-                    "input": {"texts": texts},
-                    "dimension": self.dimension
+                    "input": {"texts": texts}
                 }
             )
             response.raise_for_status()
             data = response.json()
-            # 百炼返回格式: {"output": {"embeddings": [...]}}
+            # 百炼返回格式: {"output": {"embeddings": [{"text_index": 0, "embedding": [...]}]}}
             embeddings = data.get("output", {}).get("embeddings", [])
-            return [item["embedding"] for item in embeddings]
+            # 按 text_index 排序后提取 embedding
+            sorted_embeddings = sorted(embeddings, key=lambda x: x.get("text_index", 0))
+            return [item["embedding"] for item in sorted_embeddings]
+
+    async def _encode_doubao(self, texts: List[str]) -> List[List[float]]:
+        """
+        豆包 (ByteDance) 火山引擎 API
+        模型: doubao-embedding-text-2412
+        """
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                self.base_url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": self.model,
+                    "input": texts
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            return [item["embedding"] for item in data["data"]]
 
 
 # 全局单例

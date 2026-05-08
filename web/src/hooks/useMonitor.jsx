@@ -164,6 +164,60 @@ export function useQuickChat() {
 
 // ==================== 拟人化系统 Hooks ====================
 
+// 获取驱动系统状态
+export function useDrives() {
+  const [drives, setDrives] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  const fetchDrives = useCallback(async () => {
+    try {
+      const data = await apiRequest('/api/drives')
+      setDrives(data)
+      setError(null)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchDrives()
+    const interval = setInterval(fetchDrives, 3000) // 驱动更新较快
+    return () => clearInterval(interval)
+  }, [fetchDrives])
+
+  return { drives, loading, error, refresh: fetchDrives }
+}
+
+// 获取思考状态
+export function useThinking() {
+  const [thinking, setThinking] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  const fetchThinking = useCallback(async () => {
+    try {
+      const data = await apiRequest('/api/thinking')
+      setThinking(data)
+      setError(null)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchThinking()
+    const interval = setInterval(fetchThinking, 5000)
+    return () => clearInterval(interval)
+  }, [fetchThinking])
+
+  return { thinking, loading, error, refresh: fetchThinking }
+}
+
 // 获取意图状态
 export function useIntent() {
   const [intent, setIntent] = useState(null)
@@ -265,32 +319,76 @@ export function useNarrative() {
 
   useEffect(() => {
     fetchNarrative()
-    const interval = setInterval(fetchNarrative, 10000) // 叙事更新较慢
+    const interval = setInterval(fetchNarrative, 10000)
     return () => clearInterval(interval)
   }, [fetchNarrative])
 
   return { narrative, loading, error, refresh: fetchNarrative }
 }
 
+// 获取日志
+export function useLogs(logType = 'all', limit = 100) {
+  const [logs, setLogs] = useState([])
+  const [stats, setStats] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  const fetchLogs = useCallback(async () => {
+    try {
+      const data = await apiRequest(`/api/logs?log_type=${logType}&limit=${limit}`)
+      setLogs(data.logs || [])
+      setStats(data.stats)
+      setError(null)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }, [logType, limit])
+
+  const clearLogs = useCallback(async (type = null) => {
+    try {
+      await apiRequest(`/api/logs?type=${type || ''}`, { method: 'DELETE' })
+      setLogs([])
+    } catch (err) {
+      console.error('Failed to clear logs:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchLogs()
+    const interval = setInterval(fetchLogs, 5000)
+    return () => clearInterval(interval)
+  }, [fetchLogs])
+
+  return { logs, stats, loading, error, refresh: fetchLogs, clearLogs }
+}
+
 // 综合拟人化状态 Hook
 export function useAnthropomorphic() {
+  const drivesHook = useDrives()
   const intentHook = useIntent()
   const desiresHook = useDesires()
   const biasHook = useCognitiveBias()
   const narrativeHook = useNarrative()
+  const thinkingHook = useThinking()
 
   return {
+    drives: drivesHook.drives,
     intent: intentHook.intent,
     desires: desiresHook.desires,
     cognitiveBias: biasHook.bias,
     narrative: narrativeHook.narrative,
-    loading: intentHook.loading || desiresHook.loading || biasHook.loading || narrativeHook.loading,
-    error: intentHook.error || desiresHook.error || biasHook.error || narrativeHook.error,
+    thinking: thinkingHook.thinking,
+    loading: drivesHook.loading || intentHook.loading || desiresHook.loading || biasHook.loading || narrativeHook.loading,
+    error: drivesHook.error || intentHook.error || desiresHook.error || biasHook.error || narrativeHook.error,
     refresh: () => {
+      drivesHook.refresh()
       intentHook.refresh()
       desiresHook.refresh()
       biasHook.refresh()
       narrativeHook.refresh()
+      thinkingHook.refresh()
     },
   }
 }
@@ -298,6 +396,8 @@ export function useAnthropomorphic() {
 // 监控面板专用 Hook - 组合引擎状态和 WebSocket
 export function useMonitor() {
   const [state, setState] = useState(null)
+  const [drives, setDrives] = useState(null)
+  const [intents, setIntents] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [connected, setConnected] = useState(false)
@@ -305,8 +405,14 @@ export function useMonitor() {
 
   const fetchState = useCallback(async () => {
     try {
-      const data = await apiRequest('/api/state')
-      setState(data)
+      const [stateData, drivesData, intentData] = await Promise.all([
+        apiRequest('/api/state'),
+        apiRequest('/api/drives').catch(() => null),
+        apiRequest('/api/intent').catch(() => null),
+      ])
+      setState(stateData)
+      setDrives(drivesData)
+      setIntents(intentData)
       setLastUpdate(new Date().toLocaleTimeString())
       setError(null)
     } catch (err) {
@@ -339,7 +445,19 @@ export function useMonitor() {
       try {
         const data = JSON.parse(event.data)
         if (data.type === 'state' || data.type === 'state_update') {
-          setState(data.data)
+          // 处理双层嵌套：{type, data: {code, data: {...}}}
+          let stateData = data.data
+          if (stateData?.data) {
+            stateData = stateData.data  // 解包双层嵌套
+          }
+          setState(stateData)
+          // 从 state 中提取 drives
+          if (stateData?.drives) {
+            setDrives(stateData.drives)
+          }
+          if (stateData?.intents) {
+            setIntents(stateData.intents)
+          }
           setLastUpdate(new Date().toLocaleTimeString())
         }
       } catch (e) {
@@ -350,5 +468,5 @@ export function useMonitor() {
     return () => ws.close()
   }, [])
 
-  return { state, loading, error, connected, refresh, lastUpdate }
+  return { state, drives, intents, loading, error, connected, refresh, lastUpdate }
 }
