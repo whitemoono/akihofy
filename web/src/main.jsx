@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { Layout } from './components/Layout'
+import { LandingPage } from './pages/LandingPage'
 import { ChatPage } from './pages/ChatPage'
 import { MonitorPage } from './pages/MonitorPage'
 import { PersonalityPage } from './pages/PersonalityPage'
@@ -26,7 +27,8 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       <Live2DSettingsProvider>
         <Routes>
           <Route element={<Layout />}>
-            <Route path="/" element={<ChatPage />} />
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/chat" element={<ChatPage />} />
             <Route path="/monitor" element={<MonitorPage />} />
             <Route path="/personality" element={<PersonalityPage />} />
             <Route path="/relationship" element={<RelationshipPage />} />

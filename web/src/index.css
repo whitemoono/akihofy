@@ -622,3 +622,118 @@
 .table-icon-badge {
   @apply inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium;
 }
+
+/* ==================== 落地页样式 ==================== */
+
+.landing-page {
+  min-height: 100vh;
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+.landing-glow {
+  position: absolute;
+  width: 60vw;
+  height: 60vw;
+  background: radial-gradient(circle, rgba(45, 164, 168, 0.25) 0%, rgba(255, 255, 255, 0) 60%);
+  border-radius: 50%;
+  filter: blur(80px);
+  z-index: 0;
+  animation: glowPulse 8s ease-in-out infinite alternate;
+}
+
+@keyframes glowPulse {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translate(5vw, 3vh) scale(1.1);
+    opacity: 0.9;
+  }
+}
+
+/* 粒子连线效果 */
+.particle-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+/* 对话面板特殊样式 */
+.landing-chat-panel {
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+/* 功能卡片悬停效果 */
+.feature-card {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.feature-card:hover {
+  transform: translateY(-8px);
+}
+
+/* 打字机光标 */
+.typewriter-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background-color: #2dd4bf;
+  margin-left: 2px;
+  animation: cursorBlink 1s step-end infinite;
+  vertical-align: text-bottom;
+}
+
+@keyframes cursorBlink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* 滚动条样式 */
+.landing-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.landing-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.landing-scroll::-webkit-scrollbar-thumb {
+  background: rgba(45, 164, 168, 0.2);
+  border-radius: 3px;
+}
+
+.landing-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(45, 164, 168, 0.4);
+}
+
+/* 按钮动画 */
+.btn-glow {
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-glow::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.3),
+    transparent
+  );
+  transition: left 0.5s ease;
+}
+
+.btn-glow:hover::before {
+  left: 100%;
+}

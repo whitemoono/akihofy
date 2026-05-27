@@ -3,17 +3,20 @@
  * 包含侧边栏和主内容区
  */
 
-import { Outlet } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 
 export function Layout() {
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-cyan-50/30 flex">
-      {/* 侧边栏 */}
-      <Sidebar />
+  const location = useLocation()
+  const isLandingPage = location.pathname === '/'
 
-      {/* 主内容区 - 偏移侧边栏宽度，可滚动 */}
-      <main className="flex-1 ml-16 overflow-y-auto">
+  return (
+    <div className={`min-h-screen bg-gradient-to-br from-slate-50 via-white to-cyan-50/30 flex`}>
+      {/* 侧边栏 - 落地页不显示 */}
+      {!isLandingPage && <Sidebar />}
+
+      {/* 主内容区 */}
+      <main className={`flex-1 overflow-y-auto ${isLandingPage ? 'ml-0' : 'ml-16'}`}>
         <Outlet />
       </main>
     </div>
