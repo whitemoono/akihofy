@@ -584,6 +584,12 @@ class LLMManager:
             "model": "llama2",
             "env_key": "",
         },
+        "mimo": {
+            "provider_type": "openai-compatible",
+            "base_url": "https://api.siliconflow.cn/v1",
+            "model": "Xiaomi/MiMo-7B-RL",
+            "env_key": "MIMO_API_KEY",
+        },
     }
 
     def __init__(
