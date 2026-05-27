@@ -354,6 +354,7 @@ export function SettingsPage() {
     const DEFAULT_MODELS = {
       'llm': {
         'deepseek': ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
+        'mimo': ['Xiaomi/MiMo-7B-RL', 'Xiaomi/MiMo-7B-SFT'],
         'siliconflow': ['Qwen/Qwen2.5-14B-Instruct', 'deepseek-ai/DeepSeek-V2.5'],
         'openai': ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
         'anthropic': ['claude-3-5-sonnet-20241022', 'claude-3-opus-20240229'],
